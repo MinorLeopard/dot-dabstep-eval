@@ -24,6 +24,9 @@ run_eval_live_dev:
 run_eval_live_full:
 	$(PYTHON) -m src.runner --client live --dot-mode agentic --source hf
 
+run_eval_live_target30:
+	$(PYTHON) -m src.runner --client live --dot-mode agentic --source hf --target30
+
 analyze:
 ifdef RESULTS
 	$(PYTHON) -m src.analyze_failures $(RESULTS)
