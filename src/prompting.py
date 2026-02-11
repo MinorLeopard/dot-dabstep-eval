@@ -23,7 +23,12 @@ FINAL_ANSWER_PATTERN = re.compile(r"FINAL_ANSWER:\s*(.+?)(?:\n|$)", re.IGNORECAS
 
 def build_prompt(task: Task) -> str:
     """Build the full prompt for a DABStep task."""
-    return f"{SYSTEM_INSTRUCTION}\n\nQuestion: {task.question}"
+    guidelines = task.metadata.get("guidelines", "")
+    parts = [SYSTEM_INSTRUCTION]
+    if guidelines:
+        parts.append(f"Guidelines:\n{guidelines}")
+    parts.append(f"Question: {task.question}")
+    return "\n\n".join(parts)
 
 
 def parse_final_answer(response_text: str) -> str | None:

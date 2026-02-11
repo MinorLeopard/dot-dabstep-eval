@@ -89,6 +89,7 @@ def run_eval(
             record = {
                 "question_id": task.question_id,
                 "difficulty": task.difficulty,
+                "guidelines": task.metadata.get("guidelines", ""),
                 "prompt": prompt,
                 "dot_response_raw": raw_text,
                 "parsed_answer": parsed_answer,

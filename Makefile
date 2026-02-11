@@ -3,9 +3,6 @@
 PYTHON := python
 PIP := pip
 
-# Find the most recent results file
-LATEST_RESULTS := $(shell ls -t results/*.jsonl 2>/dev/null | head -1)
-
 setup:
 	$(PIP) install -e ".[dev]"
 
@@ -24,10 +21,8 @@ run_eval_full:
 analyze:
 ifdef RESULTS
 	$(PYTHON) -m src.analyze_failures $(RESULTS)
-else ifdef LATEST_RESULTS
-	$(PYTHON) -m src.analyze_failures $(LATEST_RESULTS)
 else
-	@echo "No results found. Run 'make run_eval' first, or pass RESULTS=path/to/file.jsonl"
+	$(PYTHON) -m src.analyze_failures
 endif
 
 clean:

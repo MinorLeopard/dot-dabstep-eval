@@ -23,8 +23,8 @@ def test_run_eval_writes_results():
         tasks_path = _make_tasks_jsonl(
             tmp,
             [
-                {"question_id": "q1", "question": "What is 1+1?", "ground_truth": "2", "difficulty": "easy"},
-                {"question_id": "q2", "question": "Capital of France?", "ground_truth": "Paris", "difficulty": "easy"},
+                {"question_id": "q1", "question": "What is 1+1?", "answer": "2", "level": "easy"},
+                {"question_id": "q2", "question": "Capital of France?", "answer": "Paris", "level": "easy"},
             ],
         )
         results_dir = tmp / "results"
@@ -56,7 +56,7 @@ def test_run_eval_with_override_correct():
         tmp = Path(tmp)
         tasks_path = _make_tasks_jsonl(
             tmp,
-            [{"question_id": "q1", "question": "test", "ground_truth": "42", "difficulty": "easy"}],
+            [{"question_id": "q1", "question": "test", "answer": "42", "level": "easy"}],
         )
 
         output = run_eval(

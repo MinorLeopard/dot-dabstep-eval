@@ -83,6 +83,17 @@ def show_failures(df: pd.DataFrame, n: int = 10) -> None:
         print()
 
 
+def find_newest_results() -> Path | None:
+    """Find the newest results JSONL file using pathlib (works on Windows and Unix)."""
+    results_dir = Path("results")
+    if not results_dir.is_dir():
+        return None
+    jsonl_files = list(results_dir.glob("*.jsonl"))
+    if not jsonl_files:
+        return None
+    return max(jsonl_files, key=lambda p: p.stat().st_mtime)
+
+
 def main() -> None:
     """CLI entry point."""
     import argparse
@@ -90,11 +101,19 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     parser = argparse.ArgumentParser(description="Analyze DABStep eval results")
-    parser.add_argument("results_file", type=Path, help="Path to results JSONL")
+    parser.add_argument("results_file", nargs="?", type=Path, default=None, help="Path to results JSONL (auto-detects newest if omitted)")
     parser.add_argument("--failures", type=int, default=10, help="Number of sample failures to show")
     args = parser.parse_args()
 
-    df = load_results(args.results_file)
+    results_file: Path | None = args.results_file
+    if results_file is None:
+        results_file = find_newest_results()
+        if results_file is None:
+            print("No results JSONL files found in results/. Run 'make run_eval' first, or pass a path explicitly.")
+            sys.exit(1)
+        print(f"Auto-detected newest results: {results_file}")
+
+    df = load_results(results_file)
     stats = summary(df)
     print_report(stats)
     show_failures(df, n=args.failures)

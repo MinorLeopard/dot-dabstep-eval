@@ -10,8 +10,8 @@ from typing import Iterator
 
 logger = logging.getLogger(__name__)
 
-DABSTEP_HF_REPO = "ServiceNow/dabstep"
-DABSTEP_SPLIT = "test"
+DABSTEP_HF_REPO = "adyen/DABstep"
+DABSTEP_SPLIT = "dev"
 
 
 @dataclass(frozen=True)
@@ -46,13 +46,10 @@ def load_from_jsonl(path: Path) -> list[Task]:
                     Task(
                         question_id=str(obj["question_id"]),
                         question=obj["question"],
-                        ground_truth=str(obj["ground_truth"]),
-                        difficulty=obj.get("difficulty", "unknown"),
-                        metadata={
-                            k: v
-                            for k, v in obj.items()
-                            if k not in ("question_id", "question", "ground_truth", "difficulty")
-                        },
+                        ground_truth=str(obj["answer"]),
+                        difficulty=str(obj.get("level", "")),
+                        metadata={"guidelines": obj.get("guidelines", "")},
+
                     )
                 )
             except KeyError as exc:
@@ -84,10 +81,11 @@ def load_from_hf(
             break
         tasks.append(
             Task(
-                question_id=str(row.get("question_id", i)),
-                question=row["question"],
-                ground_truth=str(row["ground_truth"]),
-                difficulty=row.get("difficulty", "unknown"),
+                question_id=str(row["task_id"]),
+                question=str(row["question"]),
+                ground_truth=str(row["answer"]),
+                difficulty=str(row.get("level", "unknown")),
+                metadata={"guidelines": row.get("guidelines", "")},
             )
         )
     logger.info("Loaded %d tasks from HuggingFace", len(tasks))
