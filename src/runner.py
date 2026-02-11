@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -165,6 +166,12 @@ def run_eval(
                 "dot_status": dot_status,
                 "dot_error_body": dot_error_body,
                 "latency_s": latency_s,
+                "response_length": len(raw_text),
+                "has_sql": bool(re.search(r'\bSELECT\b', raw_text, re.IGNORECASE)),
+                "has_sql_error": bool(re.search(
+                    r'(?:SQL error|syntax error|no such table|OperationalError)',
+                    raw_text, re.IGNORECASE,
+                )),
             }
             out.write(json.dumps(record) + "\n")
 

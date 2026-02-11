@@ -39,6 +39,16 @@ def _try_parse_float(s: str) -> float | None:
         return None
 
 
+def _try_parse_list(s: str) -> list[str] | None:
+    """Attempt to parse a comma-separated list."""
+    if "," not in s:
+        return None
+    items = [item.strip() for item in s.split(",") if item.strip()]
+    if len(items) < 2:
+        return None
+    return items
+
+
 def score_answer(parsed_answer: str | None, ground_truth: str) -> tuple[int, str | None]:
     """Score a parsed answer against ground truth.
 
@@ -64,5 +74,19 @@ def score_answer(parsed_answer: str | None, ground_truth: str) -> tuple[int, str
     # String exact match
     if norm_parsed == norm_truth:
         return 1, None
+
+    # Try set-based comparison for comma-separated lists
+    parsed_list = _try_parse_list(norm_parsed)
+    truth_list = _try_parse_list(norm_truth)
+    if parsed_list is not None and truth_list is not None:
+        if set(parsed_list) == set(truth_list):
+            return 1, None
+        parsed_set = set(parsed_list)
+        truth_set = set(truth_list)
+        if parsed_set > truth_set:
+            return 0, "superset_answer"
+        if parsed_set < truth_set:
+            return 0, "subset_answer"
+        return 0, "wrong_list"
 
     return 0, "wrong_answer"

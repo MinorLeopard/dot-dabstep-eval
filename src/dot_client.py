@@ -133,7 +133,7 @@ class LiveDotClient(DotClient):
         api_key: str | None = None,
         base_url: str | None = None,
         mode: str = "agentic",
-        timeout: float = 300.0,
+        timeout: float = 600.0,
     ) -> None:
         # Best-effort .env loading
         try:
