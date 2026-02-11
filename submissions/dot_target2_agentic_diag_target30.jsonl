@@ -1,0 +1,2 @@
+{"question_id": "2769", "answer": "", "dot_response_raw": ""}
+{"question_id": "1763", "answer": "Not Applicable", "dot_response_raw": "The fees.json and merchant_data.json are referenced in the notes but are not available as queryable tables in the database. I only have access to `uploads.main.payments`, `uploads.main.acquirer_countries`, and `uploads.main.merchant_category_codes`. Without the fee rules data, I cannot determine which Fee IDs apply.\n\nFINAL_ANSWER: Not Applicable"}
