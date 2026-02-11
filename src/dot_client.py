@@ -133,7 +133,7 @@ class LiveDotClient(DotClient):
         api_key: str | None = None,
         base_url: str | None = None,
         mode: str = "agentic",
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ) -> None:
         # Best-effort .env loading
         try:
@@ -158,16 +158,57 @@ class LiveDotClient(DotClient):
             raise ValueError(f"mode must be 'ask' or 'agentic', got {mode!r}")
         self.mode = mode
 
+        # Allow env-var override for timeout
+        env_timeout = os.environ.get("DOT_TIMEOUT_SECONDS")
+        if env_timeout:
+            try:
+                timeout = float(env_timeout)
+            except ValueError:
+                pass
+        self.timeout = timeout
+
         self._client = httpx.Client(
             base_url=self.base_url,
             headers=self._build_headers(),
             timeout=timeout,
         )
         logger.info(
-            "LiveDotClient initialized: base_url=%s, mode=%s",
+            "LiveDotClient initialized: base_url=%s, mode=%s, timeout=%.0fs",
             self.base_url,
             self.mode,
+            timeout,
         )
+
+    def preflight(self) -> dict:
+        """Quick health check — sends a trivial query and returns status info.
+
+        Returns dict with keys: ok, status_code, latency_s, body_preview.
+        Does NOT raise on failure.
+        """
+        payload = {
+            "chat_id": f"preflight_{uuid.uuid4().hex[:8]}",
+            "messages": [{"role": "user", "content": "Reply with the single word OK"}],
+        }
+        endpoint = f"/api/{self.mode}"
+        start = time.monotonic()
+        try:
+            resp = self._client.post(endpoint, json=payload)
+            elapsed = round(time.monotonic() - start, 2)
+            body_preview = resp.text[:500]
+            return {
+                "ok": resp.status_code == 200,
+                "status_code": resp.status_code,
+                "latency_s": elapsed,
+                "body_preview": body_preview,
+            }
+        except Exception as exc:
+            elapsed = round(time.monotonic() - start, 2)
+            return {
+                "ok": False,
+                "status_code": None,
+                "latency_s": elapsed,
+                "body_preview": f"{type(exc).__name__}: {exc}"[:500],
+            }
 
     def _build_headers(self) -> dict[str, str]:
         """Build auth headers. Sends both X-API-KEY and API-KEY for compatibility."""
@@ -187,15 +228,49 @@ class LiveDotClient(DotClient):
         - ``{"explanation": "..."}``  (/api/ask response)
         - ``{"response": "..."}``
         - ``{"text": "..."}``
+        - Agentic tool_calls: ``display_to_user`` with results in arguments
+        - Agentic tool responses: ``additional_data.formatted_result``
         """
-        # Shape 1: messages array
         messages = data.get("messages", [])
         if isinstance(messages, list):
+            # Shape 1a: assistant message with non-empty content
             for msg in reversed(messages):
                 if isinstance(msg, dict) and msg.get("role") == "assistant":
                     text = msg.get("content", "").strip()
                     if text:
                         return text
+
+            # Shape 1b (agentic): assistant used display_to_user tool call
+            # Extract from tool response's formatted_result or tool_call arguments
+            for msg in reversed(messages):
+                if not isinstance(msg, dict):
+                    continue
+                # Check tool response additional_data.formatted_result
+                if msg.get("role") == "tool" and msg.get("name") == "display_to_user":
+                    ad = msg.get("additional_data", {})
+                    if isinstance(ad, dict):
+                        fr = ad.get("formatted_result", [])
+                        if isinstance(fr, list):
+                            parts = []
+                            for item in fr:
+                                if isinstance(item, dict) and item.get("data"):
+                                    parts.append(str(item["data"]))
+                            if parts:
+                                return "\n".join(parts)
+                # Check assistant tool_calls for display_to_user arguments
+                if msg.get("role") == "assistant":
+                    for tc in msg.get("tool_calls", []):
+                        if isinstance(tc, dict):
+                            fn = tc.get("function", {})
+                            if fn.get("name") == "display_to_user":
+                                try:
+                                    import json as _json
+                                    args = _json.loads(fn.get("arguments", "{}"))
+                                    results = args.get("results", "")
+                                    if isinstance(results, str) and results.strip():
+                                        return results.strip()
+                                except (ValueError, TypeError):
+                                    pass
 
         # Shape 2: direct response field (e.g. /api/ask returns {"explanation": "..."})
         for key in ("explanation", "response", "text", "answer"):
@@ -228,7 +303,17 @@ class LiveDotClient(DotClient):
         logger.debug("POST %s chat_id=%s (prompt length=%d)", endpoint, chat_id, len(prompt))
         start = time.monotonic()
 
-        resp = self._client.post(endpoint, json=payload)
+        # Retry once on 502 (transient gateway errors)
+        max_retries = 2
+        for attempt in range(max_retries):
+            resp = self._client.post(endpoint, json=payload)
+            if resp.status_code == 502 and attempt < max_retries - 1:
+                wait = 5 * (attempt + 1)
+                logger.warning("502 on %s, retrying in %ds (attempt %d)", endpoint, wait, attempt + 1)
+                time.sleep(wait)
+                continue
+            break
+
         if resp.status_code != 200:
             raise DotHttpError(resp.status_code, resp.text[:500])
 
