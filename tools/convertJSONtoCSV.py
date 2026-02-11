@@ -229,11 +229,27 @@ def build_merchants_df(merchant_json: Any) -> pd.DataFrame:
         primary_acquirer = _first_existing(r, ["primary_acquirer", "primaryAcquirer", "acquirer"])
         alternate_acquirer = _first_existing(r, ["alternate_acquirer", "alternateAcquirer", "backup_acquirer"])
 
+        # Map capture_delay to fee-matching bucket
+        delay = str(capture_delay) if capture_delay else ""
+        if delay == "immediate":
+            capture_delay_bucket = "immediate"
+        elif delay in ("1", "2"):
+            capture_delay_bucket = "<3"
+        elif delay in ("3", "4", "5"):
+            capture_delay_bucket = "3-5"
+        elif delay == "manual":
+            capture_delay_bucket = "manual"
+        elif delay.isdigit() and int(delay) > 5:
+            capture_delay_bucket = ">5"
+        else:
+            capture_delay_bucket = ""
+
         mapped.append({
             "merchant": merchant or "",
             "account_type": account_type or "",
             "merchant_category_code": int(mcc) if str(mcc).isdigit() else ("" if mcc in (None, "") else str(mcc)),
             "capture_delay": capture_delay or "",
+            "capture_delay_bucket": capture_delay_bucket,
             "primary_acquirer": primary_acquirer or "",
             "alternate_acquirer": alternate_acquirer or "",
         })

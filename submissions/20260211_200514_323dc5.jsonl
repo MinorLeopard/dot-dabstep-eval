@@ -1,0 +1,7 @@
+{"task_id": "5", "agent_answer": "NL", "reasoning_trace": "FINAL_ANSWER: NL"}
+{"task_id": "49", "agent_answer": "A. NL", "reasoning_trace": "The top country by fraudulent transaction count is NL with 2,955 fraudulent transactions.\n\nFINAL_ANSWER: A. NL"}
+{"task_id": "70", "agent_answer": "yes", "reasoning_trace": "The fraud rate for Martinis_Fine_Steakhouse is 9.1%, which exceeds the >8.3% threshold \u2014 the highest tier where maximum fees apply and account review/termination is possible.\n\nFINAL_ANSWER: yes"}
+{"task_id": "1273", "agent_answer": "0.117667", "reasoning_trace": "FINAL_ANSWER: 0.117667"}
+{"task_id": "1305", "agent_answer": "0.123217", "reasoning_trace": "FINAL_ANSWER: 0.123217"}
+{"task_id": "1464", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1681", "agent_answer": "", "reasoning_trace": ""}
