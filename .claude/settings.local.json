@@ -3,7 +3,8 @@
     "allow": [
       "Bash(pip install:*)",
       "Bash(python -m pytest:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(if not exist \"E:\\\\dot-dabstep-eval\\\\notes\" mkdir \"E:\\\\dot-dabstep-eval\\\\notes\")"
     ]
   }
 }

@@ -1,4 +1,4 @@
-.PHONY: setup test lint run_eval run_eval_full analyze clean
+.PHONY: setup test lint run_eval run_eval_full run_eval_live_dev run_eval_live_full analyze clean
 
 PYTHON := python
 PIP := pip
@@ -18,6 +18,12 @@ run_eval:
 run_eval_full:
 	$(PYTHON) -m src.runner --source hf
 
+run_eval_live_dev:
+	$(PYTHON) -m src.runner --client live --dot-mode agentic --source hf --limit 10
+
+run_eval_live_full:
+	$(PYTHON) -m src.runner --client live --dot-mode agentic --source hf
+
 analyze:
 ifdef RESULTS
 	$(PYTHON) -m src.analyze_failures $(RESULTS)
@@ -26,5 +32,5 @@ else
 endif
 
 clean:
-	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	rm -rf .pytest_cache .ruff_cache *.egg-info
+	$(PYTHON) -c "import shutil, pathlib; [shutil.rmtree(p) for p in pathlib.Path('.').rglob('__pycache__')]"
+	$(PYTHON) -c "import shutil, pathlib; [shutil.rmtree(p, True) for p in [pathlib.Path('.pytest_cache'), pathlib.Path('.ruff_cache')] if p.exists()]"

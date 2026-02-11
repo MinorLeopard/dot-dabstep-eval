@@ -10,8 +10,15 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from src.dabstep_loader import Task, load_tasks
-from src.dot_client import DotClient, FakeDotClient
+from src.dabstep_loader import load_tasks
+from src.dot_client import (
+    DotClient,
+    DotEmptyResponseError,
+    DotHttpError,
+    DotTimeoutError,
+    FakeDotClient,
+    LiveDotClient,
+)
 from src.prompting import build_prompt, parse_final_answer
 from src.scoring import score_answer
 
@@ -33,6 +40,7 @@ def run_eval(
     limit: int | None = None,
     run_id: str | None = None,
     results_dir: Path = RESULTS_DIR,
+    dot_mode: str = "agentic",
 ) -> Path:
     """Run the full evaluation pipeline.
 
@@ -43,6 +51,7 @@ def run_eval(
         limit: Max number of tasks to evaluate.
         run_id: Custom run ID. Auto-generated if None.
         results_dir: Directory to write results.
+        dot_mode: Dot API mode used (recorded in each result).
 
     Returns:
         Path to the results JSONL file.
@@ -71,15 +80,39 @@ def run_eval(
         for task in tqdm(tasks, desc=f"Eval {run_id}"):
             prompt = build_prompt(task)
 
+            parsed_answer: str | None = None
+            latency_ms: int | None = None
+            retries: int | None = None
+            dot_error_type: str | None = None
+
             try:
                 response = client.query(prompt)
                 raw_text = response.text
+                if response.usage:
+                    latency_ms = response.usage.get("latency_ms")
+                    retries = response.usage.get("retries")
+            except DotHttpError as exc:
+                logger.error("HTTP error on %s: %s", task.question_id, exc)
+                raw_text = ""
+                dot_error_type = "dot_http_error"
+            except DotTimeoutError as exc:
+                logger.error("Timeout on %s: %s", task.question_id, exc)
+                raw_text = ""
+                dot_error_type = "dot_timeout"
+            except DotEmptyResponseError as exc:
+                logger.error("Empty response on %s: %s", task.question_id, exc)
+                raw_text = ""
+                dot_error_type = "dot_empty_response"
             except Exception as exc:
                 logger.error("Client error on %s: %s", task.question_id, exc)
                 raw_text = ""
+                dot_error_type = "client_error"
 
-            parsed_answer = parse_final_answer(raw_text)
-            sc, error_type = score_answer(parsed_answer, task.ground_truth)
+            if dot_error_type:
+                sc, error_type = 0, dot_error_type
+            else:
+                parsed_answer = parse_final_answer(raw_text)
+                sc, error_type = score_answer(parsed_answer, task.ground_truth)
 
             total_score += sc
             total += 1
@@ -96,6 +129,9 @@ def run_eval(
                 "ground_truth": task.ground_truth,
                 "score": sc,
                 "error_type": error_type,
+                "dot_mode": dot_mode,
+                "latency_ms": latency_ms,
+                "retries": retries,
             }
             out.write(json.dumps(record) + "\n")
 
@@ -124,10 +160,24 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--results-dir", type=Path, default=RESULTS_DIR)
+    parser.add_argument(
+        "--client",
+        default="fake",
+        choices=["live", "fake"],
+        help="Client to use: 'live' for real Dot API, 'fake' for deterministic testing",
+    )
+    parser.add_argument(
+        "--dot-mode",
+        default="agentic",
+        choices=["ask", "agentic"],
+        help="Dot API mode: 'ask' for /api/ask, 'agentic' for /api/agentic",
+    )
     args = parser.parse_args()
 
-    # TODO: swap to LiveDotClient once API is ready
-    client = FakeDotClient()
+    if args.client == "live":
+        client: DotClient = LiveDotClient(mode=args.dot_mode)
+    else:
+        client = FakeDotClient()
 
     output = run_eval(
         client=client,
@@ -136,6 +186,7 @@ def main() -> None:
         limit=args.limit,
         run_id=args.run_id,
         results_dir=args.results_dir,
+        dot_mode=args.dot_mode,
     )
     print(f"Results written to {output}")
 
