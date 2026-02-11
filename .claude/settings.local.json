@@ -5,7 +5,10 @@
       "Bash(python -m pytest:*)",
       "Bash(python:*)",
       "Bash(if not exist \"E:\\\\dot-dabstep-eval\\\\notes\" mkdir \"E:\\\\dot-dabstep-eval\\\\notes\")",
-      "Bash(make run_eval_live_dev:*)"
+      "Bash(make run_eval_live_dev:*)",
+      "Bash(findstr:*)",
+      "Bash(tasklist:*)",
+      "Bash(E:)"
     ]
   }
 }
