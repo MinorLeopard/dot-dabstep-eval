@@ -10,3 +10,4 @@ build/
 results/*.jsonl
 !results/.gitkeep
 .env
+.jsonl
