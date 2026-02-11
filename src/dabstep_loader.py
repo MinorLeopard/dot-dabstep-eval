@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 DABSTEP_HF_REPO = "adyen/DABstep"
 DABSTEP_SPLIT = "dev"
 
+TARGET_TASK_IDS: list[int] = [
+    24, 43, 44, 625, 973, 1287, 1295, 1296, 1308, 1312,
+    1436, 1443, 1485, 1515, 1516, 1519, 1729, 1763, 1817, 1823,
+    1853, 2463, 2522, 2527, 2553, 2664, 2725, 2767, 2769, 2771,
+]
+
 
 @dataclass(frozen=True)
 class Task:
@@ -90,6 +96,29 @@ def load_from_hf(
         )
     logger.info("Loaded %d tasks from HuggingFace", len(tasks))
     return tasks
+
+
+def filter_target_tasks(
+    tasks: list[Task],
+    target_ids: list[int] | None = None,
+) -> list[Task]:
+    """Filter tasks to only those whose question_id is in target_ids.
+
+    Raises ValueError if any target IDs are missing from the loaded tasks.
+    """
+    if target_ids is None:
+        target_ids = TARGET_TASK_IDS
+    target_strs = {str(tid) for tid in target_ids}
+    filtered = [t for t in tasks if t.question_id in target_strs]
+    found_ids = {t.question_id for t in filtered}
+    missing = target_strs - found_ids
+    if missing:
+        raise ValueError(
+            f"Missing {len(missing)} target task IDs from loaded data: "
+            + ", ".join(sorted(missing, key=lambda x: int(x)))
+        )
+    logger.info("Filtered to %d target tasks", len(filtered))
+    return filtered
 
 
 def load_tasks(

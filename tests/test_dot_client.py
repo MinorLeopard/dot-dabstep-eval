@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.dot_client import (
+    DotEmptyResponseError,
     DotHttpError,
     DotResponse,
-    DotTimeoutError,
     LiveDotClient,
 )
 
@@ -44,14 +44,19 @@ class TestLiveDotClientInit:
     def test_requires_api_key(self, monkeypatch):
         monkeypatch.delenv("DOT_API_KEY", raising=False)
         monkeypatch.delenv("DOT_BASE_URL", raising=False)
-        with pytest.raises(ValueError, match="DOT_API_KEY"):
-            LiveDotClient()
+        # Stub load_dotenv so a real .env file doesn't inject vars back
+        _fake_dotenv = type("M", (), {"load_dotenv": staticmethod(lambda: None)})()
+        with patch.dict("sys.modules", {"dotenv": _fake_dotenv}):
+            with pytest.raises(ValueError, match="DOT_API_KEY"):
+                LiveDotClient()
 
     def test_requires_base_url(self, monkeypatch):
         monkeypatch.setenv("DOT_API_KEY", "key")
         monkeypatch.delenv("DOT_BASE_URL", raising=False)
-        with pytest.raises(ValueError, match="DOT_BASE_URL"):
-            LiveDotClient()
+        _fake_dotenv = type("M", (), {"load_dotenv": staticmethod(lambda: None)})()
+        with patch.dict("sys.modules", {"dotenv": _fake_dotenv}):
+            with pytest.raises(ValueError, match="DOT_BASE_URL"):
+                LiveDotClient()
 
     def test_accepts_explicit_params(self, monkeypatch):
         monkeypatch.delenv("DOT_API_KEY", raising=False)
@@ -126,6 +131,11 @@ class TestExtractAssistantText:
     def test_text_field(self):
         assert LiveDotClient._extract_assistant_text({"text": "ok"}) == "ok"
 
+    def test_explanation_field(self):
+        """The /api/ask endpoint returns the answer in 'explanation'."""
+        data = {"explanation": "The answer is NL", "role": "assistant"}
+        assert LiveDotClient._extract_assistant_text(data) == "The answer is NL"
+
     def test_answer_field(self):
         assert LiveDotClient._extract_assistant_text({"answer": "ok"}) == "ok"
 
@@ -162,157 +172,192 @@ class TestExtractAssistantText:
 
 
 # ---------------------------------------------------------------------------
-# query() — mocked HTTP
+# query() — mocked HTTP, immediate response (no polling)
 # ---------------------------------------------------------------------------
 
 
 class TestQuery:
     def test_successful_query(self, env_vars):
-        """Happy path: POST returns chat_id, first poll returns assistant text."""
-        post_resp = _mock_response(200, {"chat_id": "chat_abc"})
-        get_resp = _mock_response(200, {
+        """Happy path: POST returns immediate assistant response."""
+        post_resp = _mock_response(200, {
             "messages": [{"role": "assistant", "content": "FINAL_ANSWER: 42"}]
         })
 
         with patch("src.dot_client.httpx.Client") as MockClient:
             mock_inst = MagicMock()
             mock_inst.post.return_value = post_resp
-            mock_inst.get.return_value = get_resp
             MockClient.return_value = mock_inst
 
-            client = LiveDotClient(poll_interval=0.01)
-            result = client.query("What is 6*7?")
+            client = LiveDotClient()
+            result = client.query("What is 6*7?", chat_id="test_chat")
 
         assert isinstance(result, DotResponse)
         assert "FINAL_ANSWER: 42" in result.text
         assert result.usage is not None
         assert "latency_ms" in result.usage
-        assert "chat_id" in result.usage
-        assert result.usage["chat_id"] == "chat_abc"
+        assert result.usage["chat_id"] == "test_chat"
         mock_inst.post.assert_called_once()
-        mock_inst.get.assert_called_once()
 
-    def test_post_non_200_raises_http_error(self, env_vars):
-        post_resp = _mock_response(500, text="Internal Server Error")
-
-        with patch("src.dot_client.httpx.Client") as MockClient:
-            mock_inst = MagicMock()
-            mock_inst.post.return_value = post_resp
-            MockClient.return_value = mock_inst
-
-            client = LiveDotClient(poll_interval=0.01)
-            with pytest.raises(DotHttpError, match="500"):
-                client.query("test")
-
-    def test_missing_chat_id_raises_http_error(self, env_vars):
-        post_resp = _mock_response(200, {"some_other_field": "value"})
+    def test_payload_contains_chat_id_and_messages(self, env_vars):
+        """The outgoing JSON must include chat_id and messages array."""
+        post_resp = _mock_response(200, {"response": "ok"})
 
         with patch("src.dot_client.httpx.Client") as MockClient:
             mock_inst = MagicMock()
             mock_inst.post.return_value = post_resp
             MockClient.return_value = mock_inst
 
-            client = LiveDotClient(poll_interval=0.01)
-            with pytest.raises(DotHttpError, match="chat_id"):
-                client.query("test")
+            client = LiveDotClient()
+            client.query("my test prompt", chat_id="run1_q42")
 
-    def test_poll_timeout_raises(self, env_vars):
-        post_resp = _mock_response(200, {"chat_id": "chat_abc"})
-        get_resp = _mock_response(200, {"messages": []})
+        _, kwargs = mock_inst.post.call_args
+        payload = kwargs["json"]
+        assert payload["chat_id"] == "run1_q42"
+        assert payload["messages"] == [{"role": "user", "content": "my test prompt"}]
 
-        with patch("src.dot_client.httpx.Client") as MockClient:
-            mock_inst = MagicMock()
-            mock_inst.post.return_value = post_resp
-            mock_inst.get.return_value = get_resp
-            MockClient.return_value = mock_inst
-
-            client = LiveDotClient(poll_timeout=0.05, poll_interval=0.01)
-            with pytest.raises(DotTimeoutError):
-                client.query("test")
-
-    def test_poll_non_200_raises_http_error(self, env_vars):
-        post_resp = _mock_response(200, {"chat_id": "chat_abc"})
-        get_resp = _mock_response(502, text="Bad Gateway")
+    def test_auto_generates_chat_id_when_none(self, env_vars):
+        """If no chat_id is passed, one is auto-generated."""
+        post_resp = _mock_response(200, {"response": "ok"})
 
         with patch("src.dot_client.httpx.Client") as MockClient:
             mock_inst = MagicMock()
             mock_inst.post.return_value = post_resp
-            mock_inst.get.return_value = get_resp
             MockClient.return_value = mock_inst
 
-            client = LiveDotClient(poll_interval=0.01)
-            with pytest.raises(DotHttpError, match="502"):
-                client.query("test")
-
-    def test_polls_until_response_appears(self, env_vars):
-        """Simulate 2 empty polls then a successful response."""
-        post_resp = _mock_response(200, {"chat_id": "chat_abc"})
-        empty_resp = _mock_response(200, {"messages": []})
-        full_resp = _mock_response(200, {
-            "messages": [{"role": "assistant", "content": "FINAL_ANSWER: done"}]
-        })
-
-        with patch("src.dot_client.httpx.Client") as MockClient:
-            mock_inst = MagicMock()
-            mock_inst.post.return_value = post_resp
-            mock_inst.get.side_effect = [empty_resp, empty_resp, full_resp]
-            MockClient.return_value = mock_inst
-
-            client = LiveDotClient(poll_interval=0.01, poll_timeout=5.0)
+            client = LiveDotClient()
             result = client.query("test")
 
-        assert "FINAL_ANSWER: done" in result.text
-        assert mock_inst.get.call_count == 3
-        assert result.usage["retries"] == 2
+        _, kwargs = mock_inst.post.call_args
+        payload = kwargs["json"]
+        assert "chat_id" in payload
+        assert len(payload["chat_id"]) > 0
+        assert result.usage["chat_id"] == payload["chat_id"]
+
+    def test_post_non_200_raises_http_error(self, env_vars):
+        post_resp = _mock_response(422, text="Unprocessable Entity")
+
+        with patch("src.dot_client.httpx.Client") as MockClient:
+            mock_inst = MagicMock()
+            mock_inst.post.return_value = post_resp
+            MockClient.return_value = mock_inst
+
+            client = LiveDotClient()
+            with pytest.raises(DotHttpError, match="422"):
+                client.query("test", chat_id="c1")
+
+    def test_empty_response_raises(self, env_vars):
+        """If the response has no assistant text, raise DotEmptyResponseError."""
+        post_resp = _mock_response(200, {"messages": []})
+
+        with patch("src.dot_client.httpx.Client") as MockClient:
+            mock_inst = MagicMock()
+            mock_inst.post.return_value = post_resp
+            MockClient.return_value = mock_inst
+
+            client = LiveDotClient()
+            with pytest.raises(DotEmptyResponseError):
+                client.query("test", chat_id="c1")
 
     def test_uses_agentic_endpoint(self, env_vars):
-        post_resp = _mock_response(200, {"chat_id": "c1"})
-        get_resp = _mock_response(200, {
+        post_resp = _mock_response(200, {
             "messages": [{"role": "assistant", "content": "ok"}]
         })
 
         with patch("src.dot_client.httpx.Client") as MockClient:
             mock_inst = MagicMock()
             mock_inst.post.return_value = post_resp
-            mock_inst.get.return_value = get_resp
             MockClient.return_value = mock_inst
 
-            client = LiveDotClient(mode="agentic", poll_interval=0.01)
-            client.query("test")
+            client = LiveDotClient(mode="agentic")
+            client.query("test", chat_id="c1")
 
-        args, kwargs = mock_inst.post.call_args
+        args, _ = mock_inst.post.call_args
         assert args[0] == "/api/agentic"
 
     def test_uses_ask_endpoint(self, env_vars):
-        post_resp = _mock_response(200, {"chat_id": "c1"})
-        get_resp = _mock_response(200, {
+        post_resp = _mock_response(200, {
             "messages": [{"role": "assistant", "content": "ok"}]
         })
 
         with patch("src.dot_client.httpx.Client") as MockClient:
             mock_inst = MagicMock()
             mock_inst.post.return_value = post_resp
-            mock_inst.get.return_value = get_resp
             MockClient.return_value = mock_inst
 
-            client = LiveDotClient(mode="ask", poll_interval=0.01)
-            client.query("test")
+            client = LiveDotClient(mode="ask")
+            client.query("test", chat_id="c1")
 
-        args, kwargs = mock_inst.post.call_args
+        args, _ = mock_inst.post.call_args
         assert args[0] == "/api/ask"
 
-    def test_prompt_sent_in_payload(self, env_vars):
-        post_resp = _mock_response(200, {"chat_id": "c1"})
-        get_resp = _mock_response(200, {"response": "ok"})
+    def test_agentic_list_response_extracted(self, env_vars):
+        """The /api/agentic endpoint returns a list; assistant content is extracted."""
+        api_response = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "x"}}]},
+            {"role": "tool", "content": "tool result"},
+            {"role": "assistant", "content": "FINAL_ANSWER: NL"},
+        ]
+        post_resp = _mock_response(200, json_data=api_response)
+        # Override .json() to return the list directly
+        post_resp.json.return_value = api_response
 
         with patch("src.dot_client.httpx.Client") as MockClient:
             mock_inst = MagicMock()
             mock_inst.post.return_value = post_resp
-            mock_inst.get.return_value = get_resp
             MockClient.return_value = mock_inst
 
-            client = LiveDotClient(poll_interval=0.01)
-            client.query("my test prompt")
+            client = LiveDotClient()
+            result = client.query("test", chat_id="c1")
 
-        _, kwargs = mock_inst.post.call_args
-        assert kwargs["json"]["prompt"] == "my test prompt"
+        assert result.text == "FINAL_ANSWER: NL"
+
+    def test_ask_dict_response_extracted(self, env_vars):
+        """The /api/ask endpoint returns a dict with 'explanation'."""
+        api_response = {
+            "explanation": "The answer is 42.",
+            "role": "assistant",
+            "logs": "some logs",
+        }
+        post_resp = _mock_response(200, json_data=api_response)
+
+        with patch("src.dot_client.httpx.Client") as MockClient:
+            mock_inst = MagicMock()
+            mock_inst.post.return_value = post_resp
+            MockClient.return_value = mock_inst
+
+            client = LiveDotClient(mode="ask")
+            result = client.query("test", chat_id="c1")
+
+        assert result.text == "The answer is 42."
+
+    def test_no_get_calls_made(self, env_vars):
+        """Verify no polling — only a single POST, no GET."""
+        post_resp = _mock_response(200, {
+            "messages": [{"role": "assistant", "content": "done"}]
+        })
+
+        with patch("src.dot_client.httpx.Client") as MockClient:
+            mock_inst = MagicMock()
+            mock_inst.post.return_value = post_resp
+            MockClient.return_value = mock_inst
+
+            client = LiveDotClient()
+            client.query("test", chat_id="c1")
+
+        mock_inst.post.assert_called_once()
+        mock_inst.get.assert_not_called()
+
+    def test_latency_in_usage(self, env_vars):
+        post_resp = _mock_response(200, {"response": "FINAL_ANSWER: 7"})
+
+        with patch("src.dot_client.httpx.Client") as MockClient:
+            mock_inst = MagicMock()
+            mock_inst.post.return_value = post_resp
+            MockClient.return_value = mock_inst
+
+            client = LiveDotClient()
+            result = client.query("test", chat_id="c1")
+
+        assert isinstance(result.usage["latency_ms"], int)
+        assert result.usage["latency_ms"] >= 0

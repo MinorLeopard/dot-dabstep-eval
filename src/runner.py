@@ -10,12 +10,11 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from src.dabstep_loader import load_tasks
+from src.dabstep_loader import filter_target_tasks, load_tasks
 from src.dot_client import (
     DotClient,
     DotEmptyResponseError,
     DotHttpError,
-    DotTimeoutError,
     FakeDotClient,
     LiveDotClient,
 )
@@ -25,6 +24,7 @@ from src.scoring import score_answer
 logger = logging.getLogger(__name__)
 
 RESULTS_DIR = Path("results")
+SUBMISSIONS_DIR = Path("submissions")
 
 
 def generate_run_id() -> str:
@@ -41,6 +41,7 @@ def run_eval(
     run_id: str | None = None,
     results_dir: Path = RESULTS_DIR,
     dot_mode: str = "agentic",
+    target30: bool = False,
 ) -> Path:
     """Run the full evaluation pipeline.
 
@@ -52,6 +53,7 @@ def run_eval(
         run_id: Custom run ID. Auto-generated if None.
         results_dir: Directory to write results.
         dot_mode: Dot API mode used (recorded in each result).
+        target30: If True, filter to the 30 target task IDs.
 
     Returns:
         Path to the results JSONL file.
@@ -64,6 +66,8 @@ def run_eval(
         run_id = generate_run_id()
 
     tasks = load_tasks(source=source, path=jsonl_path, limit=limit)
+    if target30:
+        tasks = filter_target_tasks(tasks)
     if not tasks:
         raise ValueError("No tasks loaded. Check source and path.")
 
@@ -73,32 +77,28 @@ def run_eval(
     total_score = 0
     total = 0
     error_counts: dict[str, int] = {}
+    submission_rows: list[dict] = []
 
     logger.info("Starting eval run %s — %d tasks", run_id, len(tasks))
 
     with open(output_path, "w", encoding="utf-8") as out:
         for task in tqdm(tasks, desc=f"Eval {run_id}"):
             prompt = build_prompt(task)
+            chat_id = f"{run_id}_{task.question_id}"
 
             parsed_answer: str | None = None
             latency_ms: int | None = None
-            retries: int | None = None
             dot_error_type: str | None = None
 
             try:
-                response = client.query(prompt)
+                response = client.query(prompt, chat_id=chat_id)
                 raw_text = response.text
                 if response.usage:
                     latency_ms = response.usage.get("latency_ms")
-                    retries = response.usage.get("retries")
             except DotHttpError as exc:
                 logger.error("HTTP error on %s: %s", task.question_id, exc)
                 raw_text = ""
                 dot_error_type = "dot_http_error"
-            except DotTimeoutError as exc:
-                logger.error("Timeout on %s: %s", task.question_id, exc)
-                raw_text = ""
-                dot_error_type = "dot_timeout"
             except DotEmptyResponseError as exc:
                 logger.error("Empty response on %s: %s", task.question_id, exc)
                 raw_text = ""
@@ -123,6 +123,7 @@ def run_eval(
                 "question_id": task.question_id,
                 "difficulty": task.difficulty,
                 "guidelines": task.metadata.get("guidelines", ""),
+                "chat_id": chat_id,
                 "prompt": prompt,
                 "dot_response_raw": raw_text,
                 "parsed_answer": parsed_answer,
@@ -131,9 +132,13 @@ def run_eval(
                 "error_type": error_type,
                 "dot_mode": dot_mode,
                 "latency_ms": latency_ms,
-                "retries": retries,
             }
             out.write(json.dumps(record) + "\n")
+
+            submission_rows.append({
+                "task_id": int(task.question_id),
+                "answer": parsed_answer if parsed_answer is not None else "",
+            })
 
     accuracy = total_score / total if total > 0 else 0.0
     logger.info(
@@ -144,6 +149,22 @@ def run_eval(
         accuracy * 100,
         error_counts,
     )
+
+    # Write submission file
+    if target30:
+        sub_dir = SUBMISSIONS_DIR
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        sub_path = sub_dir / f"{run_id}_target30.jsonl"
+        with open(sub_path, "w", encoding="utf-8") as sf:
+            for row in submission_rows:
+                sf.write(json.dumps(row) + "\n")
+        score_pct = (total_score / total * 100) if total > 0 else 0.0
+        print()
+        print("=" * 60)
+        print(f"  Target-30 Score: {total_score}/{total} = {score_pct:.1f}%")
+        print(f"  Results:    {output_path}")
+        print(f"  Submission: {sub_path}")
+        print("=" * 60)
 
     return output_path
 
@@ -172,6 +193,11 @@ def main() -> None:
         choices=["ask", "agentic"],
         help="Dot API mode: 'ask' for /api/ask, 'agentic' for /api/agentic",
     )
+    parser.add_argument(
+        "--target30",
+        action="store_true",
+        help="Run only the 30 target task IDs and produce a submission file",
+    )
     args = parser.parse_args()
 
     if args.client == "live":
@@ -187,6 +213,7 @@ def main() -> None:
         run_id=args.run_id,
         results_dir=args.results_dir,
         dot_mode=args.dot_mode,
+        target30=args.target30,
     )
     print(f"Results written to {output}")
 

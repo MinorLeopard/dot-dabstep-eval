@@ -4,7 +4,8 @@
       "Bash(pip install:*)",
       "Bash(python -m pytest:*)",
       "Bash(python:*)",
-      "Bash(if not exist \"E:\\\\dot-dabstep-eval\\\\notes\" mkdir \"E:\\\\dot-dabstep-eval\\\\notes\")"
+      "Bash(if not exist \"E:\\\\dot-dabstep-eval\\\\notes\" mkdir \"E:\\\\dot-dabstep-eval\\\\notes\")",
+      "Bash(make run_eval_live_dev:*)"
     ]
   }
 }

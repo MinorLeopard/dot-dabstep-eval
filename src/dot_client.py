@@ -1,7 +1,7 @@
 """Client for calling the Dot API.
 
 Provides FakeDotClient for deterministic testing and LiveDotClient
-for real Dot API calls via POST + polling.
+for real Dot API calls.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import hashlib
 import logging
 import os
 import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -44,15 +45,6 @@ class DotHttpError(DotApiError):
         super().__init__(f"Dot API HTTP {status_code}: {detail}")
 
 
-class DotTimeoutError(DotApiError):
-    """Raised when polling for Dot response exceeds the timeout."""
-
-    def __init__(self, chat_id: str, elapsed: float) -> None:
-        self.chat_id = chat_id
-        self.elapsed = elapsed
-        super().__init__(f"Dot API timeout after {elapsed:.1f}s for chat_id={chat_id}")
-
-
 class DotEmptyResponseError(DotApiError):
     """Raised when Dot returns an empty or missing assistant message."""
 
@@ -70,7 +62,7 @@ class DotClient(ABC):
     """Abstract base class for Dot API clients."""
 
     @abstractmethod
-    def query(self, prompt: str) -> DotResponse:
+    def query(self, prompt: str, chat_id: str | None = None) -> DotResponse:
         """Send a prompt to Dot and return the raw response."""
         ...
 
@@ -91,7 +83,7 @@ class FakeDotClient(DotClient):
     def __init__(self, answer_override: str | None = None) -> None:
         self.answer_override = answer_override
 
-    def query(self, prompt: str) -> DotResponse:
+    def query(self, prompt: str, chat_id: str | None = None) -> DotResponse:
         if self.answer_override is not None:
             answer = self.answer_override
         else:
@@ -115,30 +107,33 @@ class FakeDotClient(DotClient):
 class LiveDotClient(DotClient):
     """Real Dot API client.
 
-    Sends prompts to the Dot API and polls for assistant responses.
+    Sends a chat message to the Dot API and returns the assistant response.
+    The request body matches Dot's schema::
+
+        {
+            "chat_id": "<caller-supplied id>",
+            "messages": [{"role": "user", "content": "<prompt>"}]
+        }
+
+    The response is expected immediately (no polling).
 
     Environment variables (or .env file):
         DOT_API_KEY:  API authentication key (required).
         DOT_BASE_URL: API base URL, e.g. https://test.getdot.ai (required).
 
     Args:
-        api_key:       Override for DOT_API_KEY env var.
-        base_url:      Override for DOT_BASE_URL env var.
-        mode:          ``'agentic'`` (POST /api/agentic) or ``'ask'`` (POST /api/ask).
-        poll_timeout:  Max seconds to poll for a response.
-        poll_interval: Seconds between poll requests.
+        api_key:      Override for DOT_API_KEY env var.
+        base_url:     Override for DOT_BASE_URL env var.
+        mode:         ``'agentic'`` (POST /api/agentic) or ``'ask'`` (POST /api/ask).
+        timeout:      HTTP request timeout in seconds.
     """
-
-    DEFAULT_POLL_TIMEOUT = 60.0
-    DEFAULT_POLL_INTERVAL = 1.0
 
     def __init__(
         self,
         api_key: str | None = None,
         base_url: str | None = None,
         mode: str = "agentic",
-        poll_timeout: float = DEFAULT_POLL_TIMEOUT,
-        poll_interval: float = DEFAULT_POLL_INTERVAL,
+        timeout: float = 120.0,
     ) -> None:
         # Best-effort .env loading
         try:
@@ -163,19 +158,15 @@ class LiveDotClient(DotClient):
             raise ValueError(f"mode must be 'ask' or 'agentic', got {mode!r}")
         self.mode = mode
 
-        self.poll_timeout = poll_timeout
-        self.poll_interval = poll_interval
-
         self._client = httpx.Client(
             base_url=self.base_url,
             headers=self._build_headers(),
-            timeout=30.0,
+            timeout=timeout,
         )
         logger.info(
-            "LiveDotClient initialized: base_url=%s, mode=%s, poll_timeout=%.0fs",
+            "LiveDotClient initialized: base_url=%s, mode=%s",
             self.base_url,
             self.mode,
-            self.poll_timeout,
         )
 
     def _build_headers(self) -> dict[str, str]:
@@ -186,73 +177,18 @@ class LiveDotClient(DotClient):
             "Content-Type": "application/json",
         }
 
-    def _post_prompt(self, prompt: str) -> str:
-        """POST the prompt to the appropriate endpoint, return chat_id."""
-        endpoint = f"/api/{self.mode}"
-        payload = {"prompt": prompt}
-
-        logger.debug("POST %s (prompt length=%d)", endpoint, len(prompt))
-
-        resp = self._client.post(endpoint, json=payload)
-        if resp.status_code != 200:
-            raise DotHttpError(resp.status_code, resp.text[:500])
-
-        data = resp.json()
-        chat_id = data.get("chat_id")
-        if not chat_id:
-            raise DotHttpError(
-                resp.status_code,
-                f"Response missing 'chat_id': {resp.text[:200]}",
-            )
-
-        logger.debug("Got chat_id=%s", chat_id)
-        return chat_id
-
-    def _poll_response(self, chat_id: str) -> tuple[str, int]:
-        """Poll GET /api/c2/{chat_id} until assistant text is non-empty.
-
-        Returns:
-            Tuple of (assistant_text, retries).
-        """
-        endpoint = f"/api/c2/{chat_id}"
-        start = time.monotonic()
-        retries = 0
-
-        while True:
-            elapsed = time.monotonic() - start
-            if elapsed > self.poll_timeout:
-                raise DotTimeoutError(chat_id, elapsed)
-
-            resp = self._client.get(endpoint)
-            if resp.status_code != 200:
-                raise DotHttpError(resp.status_code, resp.text[:500])
-
-            data = resp.json()
-            assistant_text = self._extract_assistant_text(data)
-
-            if assistant_text:
-                logger.debug(
-                    "Got response after %.1fs (%d retries): %d chars",
-                    elapsed,
-                    retries,
-                    len(assistant_text),
-                )
-                return assistant_text, retries
-
-            retries += 1
-            time.sleep(self.poll_interval)
-
     @staticmethod
     def _extract_assistant_text(data: dict[str, Any]) -> str:
-        """Extract the assistant's message text from the poll response.
+        """Extract the assistant's message text from the API response.
 
-        Handles multiple possible response shapes:
+        Handles multiple response shapes:
+        - ``[{"role": "assistant", "content": "..."}]``  (agentic — list, normalized to messages)
         - ``{"messages": [{"role": "assistant", "content": "..."}]}``
+        - ``{"explanation": "..."}``  (/api/ask response)
         - ``{"response": "..."}``
         - ``{"text": "..."}``
-        - ``{"answer": "..."}``
         """
-        # Shape 1: messages array (most common)
+        # Shape 1: messages array
         messages = data.get("messages", [])
         if isinstance(messages, list):
             for msg in reversed(messages):
@@ -261,37 +197,57 @@ class LiveDotClient(DotClient):
                     if text:
                         return text
 
-        # Shape 2: direct response field
-        for key in ("response", "text", "answer"):
+        # Shape 2: direct response field (e.g. /api/ask returns {"explanation": "..."})
+        for key in ("explanation", "response", "text", "answer"):
             val = data.get(key, "")
             if isinstance(val, str) and val.strip():
                 return val.strip()
 
         return ""
 
-    def query(self, prompt: str) -> DotResponse:
+    def query(self, prompt: str, chat_id: str | None = None) -> DotResponse:
         """Send a prompt to Dot and return the response.
+
+        Args:
+            prompt:  The user message text.
+            chat_id: Deterministic chat identifier. Auto-generated UUID if None.
 
         Raises:
             DotHttpError: Non-200 HTTP status from Dot API.
-            DotTimeoutError: Polling exceeded poll_timeout.
-            DotEmptyResponseError: Polling completed but no assistant text.
+            DotEmptyResponseError: Response contained no assistant text.
         """
-        start_ms = time.monotonic()
+        if chat_id is None:
+            chat_id = uuid.uuid4().hex
 
-        chat_id = self._post_prompt(prompt)
-        assistant_text, retries = self._poll_response(chat_id)
+        endpoint = f"/api/{self.mode}"
+        payload = {
+            "chat_id": chat_id,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+
+        logger.debug("POST %s chat_id=%s (prompt length=%d)", endpoint, chat_id, len(prompt))
+        start = time.monotonic()
+
+        resp = self._client.post(endpoint, json=payload)
+        if resp.status_code != 200:
+            raise DotHttpError(resp.status_code, resp.text[:500])
+
+        raw = resp.json()
+        # Normalize: /api/agentic returns a list, /api/ask returns a dict
+        data = {"messages": raw} if isinstance(raw, list) else raw
+        assistant_text = self._extract_assistant_text(data)
+
+        elapsed_ms = (time.monotonic() - start) * 1000
 
         if not assistant_text:
             raise DotEmptyResponseError(chat_id)
 
-        elapsed_ms = (time.monotonic() - start_ms) * 1000
+        logger.debug("Got response in %.0fms: %d chars", elapsed_ms, len(assistant_text))
 
         return DotResponse(
             text=assistant_text,
             usage={
                 "latency_ms": round(elapsed_ms),
                 "chat_id": chat_id,
-                "retries": retries,
             },
         )

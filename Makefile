@@ -1,4 +1,4 @@
-.PHONY: setup test lint run_eval run_eval_full run_eval_live_dev run_eval_live_full analyze clean
+.PHONY: setup test lint run_eval run_eval_full run_eval_live_dev run_eval_live_full run_eval_live_target30 analyze clean
 
 PYTHON := python
 PIP := pip
