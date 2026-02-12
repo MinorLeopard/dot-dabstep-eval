@@ -8,7 +8,13 @@
       "Bash(make run_eval_live_dev:*)",
       "Bash(findstr:*)",
       "Bash(tasklist:*)",
-      "Bash(E:)"
+      "Bash(E:)",
+      "WebFetch(domain:docs.getdot.ai)",
+      "WebFetch(domain:test.getdot.ai)",
+      "Bash(dir:*)",
+      "Bash(powershell -c \"Get-Content ''C:\\\\Users\\\\harsh\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\E--dot-dabstep-eval\\\\tasks\\\\b39703b.output'' -Tail 30\")",
+      "Bash(powershell -c:*)",
+      "WebFetch(domain:colab.research.google.com)"
     ]
   }
 }

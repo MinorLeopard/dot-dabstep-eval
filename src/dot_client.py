@@ -303,16 +303,27 @@ class LiveDotClient(DotClient):
         logger.debug("POST %s chat_id=%s (prompt length=%d)", endpoint, chat_id, len(prompt))
         start = time.monotonic()
 
-        # Retry once on 502 (transient gateway errors)
+        # Retry on 502 or ReadTimeout (up to 2 attempts total)
         max_retries = 2
+        last_exc = None
         for attempt in range(max_retries):
-            resp = self._client.post(endpoint, json=payload)
-            if resp.status_code == 502 and attempt < max_retries - 1:
-                wait = 5 * (attempt + 1)
-                logger.warning("502 on %s, retrying in %ds (attempt %d)", endpoint, wait, attempt + 1)
-                time.sleep(wait)
-                continue
-            break
+            try:
+                resp = self._client.post(endpoint, json=payload)
+                if resp.status_code == 502 and attempt < max_retries - 1:
+                    wait = 5 * (attempt + 1)
+                    logger.warning("502 on %s, retrying in %ds (attempt %d)", endpoint, wait, attempt + 1)
+                    time.sleep(wait)
+                    # Use fresh chat_id on retry to avoid stale state
+                    payload["chat_id"] = f"{chat_id}_r{attempt+1}"
+                    continue
+                break
+            except httpx.ReadTimeout:
+                if attempt < max_retries - 1:
+                    logger.warning("ReadTimeout on %s, retrying (attempt %d)", endpoint, attempt + 1)
+                    # Use fresh chat_id on retry
+                    payload["chat_id"] = f"{chat_id}_r{attempt+1}"
+                    continue
+                raise
 
         if resp.status_code != 200:
             raise DotHttpError(resp.status_code, resp.text[:500])

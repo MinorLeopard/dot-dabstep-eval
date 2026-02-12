@@ -1,0 +1,44 @@
+[
+  {
+    "iteration": 1,
+    "run_id": "20260212_100850_5d290c",
+    "timestamp": "2026-02-12T10:18:12.176170+00:00",
+    "total": 10,
+    "correct": 5,
+    "accuracy": 0.5,
+    "error_counts": {
+      "wrong_answer": 3,
+      "superset_answer": 1,
+      "wrong_list": 1
+    },
+    "instructions_updated": true
+  },
+  {
+    "iteration": 2,
+    "run_id": "20260212_101812_f7aa56",
+    "timestamp": "2026-02-12T10:37:07.180713+00:00",
+    "total": 10,
+    "correct": 4,
+    "accuracy": 0.4,
+    "error_counts": {
+      "wrong_answer": 4,
+      "wrong_list": 1,
+      "superset_answer": 1
+    },
+    "instructions_updated": true
+  },
+  {
+    "iteration": 3,
+    "run_id": "20260212_103707_e8baeb",
+    "timestamp": "2026-02-12T11:10:52.277306+00:00",
+    "total": 10,
+    "correct": 5,
+    "accuracy": 0.5,
+    "error_counts": {
+      "wrong_answer": 2,
+      "superset_answer": 2,
+      "client_error": 1
+    },
+    "instructions_updated": false
+  }
+]

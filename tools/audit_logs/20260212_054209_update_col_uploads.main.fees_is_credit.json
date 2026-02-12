@@ -1,0 +1,11 @@
+{
+  "timestamp": "20260212_054209",
+  "action": "update_col_uploads.main.fees_is_credit",
+  "dry_run": false,
+  "before": {
+    "user_comment": "credit card flag (true/false)"
+  },
+  "after": {
+    "user_comment": "Credit card indicator. Values: 'true' (credit), 'false' (debit), NULL (matches both). Stored as VARCHAR text. When matching against payments.is_credit (BOOLEAN), compare as text strings."
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "timestamp": "20260212_050543",
+  "action": "upsert_relationship",
+  "dry_run": false,
+  "before": {
+    "existing_id": null
+  },
+  "after": {
+    "doc_id": "uploads.main.monthly_merchant_stats",
+    "table": "uploads.main.merchant_data",
+    "own_columns": [
+      "merchant"
+    ],
+    "columns": [
+      "merchant"
+    ],
+    "type": "foreign",
+    "active": true,
+    "incoming": false
+  }
+}
