@@ -67,7 +67,7 @@ class QuestionStatus:
     prompt: str = ""
 
 
-PER_QUESTION_TIMEOUT_S = 45 * 60  # 45 minutes per question hard cap
+PER_QUESTION_TIMEOUT_S = 90 * 60  # 45 minutes per question hard cap
 RATE_LIMIT_RETRIES = 3
 
 

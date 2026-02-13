@@ -1,0 +1,30 @@
+{"task_id": "973", "agent_answer": "[C: 69.36, F: 77.90, B: 86.22, A: 87.79, D: 94.34, G: 115.23]", "reasoning_trace": "FINAL_ANSWER: [C: 69.36, F: 77.90, B: 86.22, A: 87.79, D: 94.34, G: 115.23]"}
+{"task_id": "24", "agent_answer": "Other", "reasoning_trace": "The device type with the highest count of fraudulent transactions is \"Other\" with 3,026 fraudulent transactions.\n\nFINAL_ANSWER: Other"}
+{"task_id": "1287", "agent_answer": "2.792051", "reasoning_trace": "The average fee is 2.792051282051282, which rounds to 2.792051 at 6 decimal places.\n\nFINAL_ANSWER: 2.792051"}
+{"task_id": "2769", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1763", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "2767", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1729", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1853", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "44", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "2553", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "2771", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "2522", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1295", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "2463", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1817", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "43", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "2527", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1312", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1519", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "625", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1516", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1308", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1443", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1823", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "2725", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1436", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1485", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "2664", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1515", "agent_answer": "", "reasoning_trace": ""}
+{"task_id": "1296", "agent_answer": "", "reasoning_trace": ""}

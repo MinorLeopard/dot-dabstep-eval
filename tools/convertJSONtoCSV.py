@@ -71,107 +71,135 @@ def _first_existing(d: Dict[str, Any], keys: List[str]) -> Any:
             return d[k]
     return None
 
-
 # -------------------------
-# fees.json -> fees.csv
+# fees.json -> fees.csv  (FIXED)
 # -------------------------
 
 FEES_COLUMNS = [
-    "rule_id",
+    "ID",
     "card_scheme",
+    "account_type",
+    "capture_delay",
+    "monthly_fraud_level",
+    "monthly_volume",
+    "merchant_category_code",
     "is_credit",
     "aci",
-    "account_type",
-    "mcc",
-    "monthly_volume_tier",
-    "monthly_fraud_tier",
-    "capture_delay",
-    "intracountry",
     "fixed_amount",
     "rate",
+    "intracountry",
 ]
 
+def _json_list_or_empty(x: Any) -> str:
+    """Store list-like fields as JSON strings so Dot/DuckDB can parse them later."""
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return "[]"
+    if isinstance(x, list):
+        return json.dumps(x, ensure_ascii=False)
+    # Sometimes singletons show up as strings; treat empty as []
+    s = str(x).strip()
+    if s == "":
+        return "[]"
+    # If it already looks like JSON list, keep it
+    if s.startswith("[") and s.endswith("]"):
+        return s
+    # Otherwise store as single-element list
+    return json.dumps([x], ensure_ascii=False)
+
+def _int_or_null(x: Any):
+    if x is None or (isinstance(x, float) and pd.isna(x)) or str(x).strip() == "":
+        return ""
+    try:
+        return int(x)
+    except Exception:
+        return ""
+
+def _float_or_null(x: Any):
+    if x is None or (isinstance(x, float) and pd.isna(x)) or str(x).strip() == "":
+        return ""
+    try:
+        return float(x)
+    except Exception:
+        return ""
 
 def _extract_fee_rows(raw: Any) -> List[Dict[str, Any]]:
-    """
-    fees.json structure may vary. We handle:
-    - list of fee rules
-    - dict with key like "fees" / "rules" containing list
-    - dict of id->rule
-    """
     if isinstance(raw, list):
-        return raw  # list of dicts
+        return raw
     if isinstance(raw, dict):
-        # common wrappers
         for k in ("fees", "rules", "fee_rules", "data", "items"):
             if k in raw and isinstance(raw[k], list):
                 return raw[k]
-        # id -> rule dict
         if all(isinstance(v, dict) for v in raw.values()):
             out = []
             for rid, rule in raw.items():
                 rule = dict(rule)
-                rule.setdefault("rule_id", rid)
+                # Keep the real ID if present; otherwise fall back
+                rule.setdefault("ID", rid)
                 out.append(rule)
             return out
     raise ValueError("Unsupported fees.json structure (expected list or dict of rules).")
 
-
 def build_fees_df(fees_json: Any) -> pd.DataFrame:
     rows = _extract_fee_rows(fees_json)
+    out_rows = []
 
-    # flatten everything first
-    df = pd.json_normalize(rows, sep="__")
-
-    # Try to map from likely keys to canonical keys (best-effort).
-    # We keep extra columns too, but ensure canonical columns exist for Dot.
-    mapped: List[Dict[str, Any]] = []
-    for i, r in enumerate(rows, 1):
+    for r in rows:
         if not isinstance(r, dict):
-            r = {"value": r}
-        rule_id = _first_existing(r, ["rule_id", "id", "fee_id", "rule", "name"]) or i
+            continue
 
-        card_scheme = _first_existing(r, ["card_scheme", "scheme", "network", "cardNetwork", "brand"])
-        is_credit = _first_existing(r, ["is_credit", "credit", "isCredit", "card_type", "cardType"])
-        aci = _first_existing(r, ["aci", "auth_characteristic_indicator", "authIndicator"])
-        account_type = _first_existing(r, ["account_type", "accountType"])
-        mcc = _first_existing(r, ["mcc", "merchant_category_code", "merchantCategoryCode", "merchant_category"])
-        monthly_volume_tier = _first_existing(r, ["monthly_volume_tier", "volume_tier", "monthlyVolumeTier"])
-        monthly_fraud_tier = _first_existing(r, ["monthly_fraud_tier", "fraud_tier", "monthlyFraudTier"])
-        capture_delay = _first_existing(r, ["capture_delay", "captureDelay", "capture", "delay"])
-        intracountry = _first_existing(r, ["intracountry", "domestic", "is_domestic", "isDomestic"])
+        # DABStep canonical keys (from the dataset / prompt)
+        ID = _int_or_null(r.get("ID", ""))
+        card_scheme = (r.get("card_scheme") or "").strip()
+        account_type = _json_list_or_empty(r.get("account_type"))
+        capture_delay = r.get("capture_delay", "")
+        capture_delay = "" if capture_delay is None else str(capture_delay)
 
-        fixed_amount = _first_existing(r, ["fixed_amount", "fixed", "fixedFee", "fixed_fee", "fixedAmount", "amount"])
-        rate = _first_existing(r, ["rate", "bps", "basis_points", "basisPoints", "percent", "variable", "variableRate"])
+        monthly_fraud_level = r.get("monthly_fraud_level", "")
+        monthly_fraud_level = "" if monthly_fraud_level is None else str(monthly_fraud_level)
 
-        # Coerce types gently
-        mapped.append({
-            "rule_id": rule_id,
-            "card_scheme": card_scheme or "",
-            "is_credit": _to_bool_or_blank(is_credit),
-            "aci": aci or "",
-            "account_type": account_type or "",
-            "mcc": int(mcc) if str(mcc).isdigit() else ("" if mcc in (None, "") else str(mcc)),
-            "monthly_volume_tier": monthly_volume_tier or "",
-            "monthly_fraud_tier": monthly_fraud_tier or "",
-            "capture_delay": capture_delay or "",
-            "intracountry": _to_bool_or_blank(intracountry),
-            "fixed_amount": _coerce_numeric_or_blank(fixed_amount),
-            "rate": _coerce_numeric_or_blank(rate),
+        monthly_volume = r.get("monthly_volume", "")
+        monthly_volume = "" if monthly_volume is None else str(monthly_volume)
+
+        merchant_category_code = _json_list_or_empty(r.get("merchant_category_code"))
+        is_credit = r.get("is_credit", "")
+        # is_credit can be null/0/1; keep as int-ish
+        is_credit = _int_or_null(is_credit)
+
+        aci = _json_list_or_empty(r.get("aci"))
+
+        fixed_amount = _float_or_null(r.get("fixed_amount"))
+        rate = _float_or_null(r.get("rate"))
+
+        # THIS IS THE CRITICAL COLUMN:
+        intracountry = r.get("intracountry", "")
+        intracountry = _int_or_null(intracountry)
+
+        out_rows.append({
+            "ID": ID,
+            "card_scheme": card_scheme,
+            "account_type": account_type,
+            "capture_delay": capture_delay,
+            "monthly_fraud_level": monthly_fraud_level,
+            "monthly_volume": monthly_volume,
+            "merchant_category_code": merchant_category_code,
+            "is_credit": is_credit,
+            "aci": aci,
+            "fixed_amount": fixed_amount,
+            "rate": rate,
+            "intracountry": intracountry,
         })
 
-    fees_out = pd.DataFrame(mapped)
+    fees_df = pd.DataFrame(out_rows)
 
-    # Ensure rule_id stable + unique
-    if fees_out["rule_id"].duplicated().any():
-        fees_out["rule_id"] = range(1, len(fees_out) + 1)
+    # Guarantee all canonical columns exist
+    for c in FEES_COLUMNS:
+        if c not in fees_df.columns:
+            fees_df[c] = ""
 
-    # Put canonical columns first, then keep any extra flattened columns (optional).
-    extras = [c for c in df.columns if c not in FEES_COLUMNS]
-    merged = fees_out.copy()
-    for c in extras:
-        merged[c] = df[c].astype(str).fillna("")
-    return merged
+    # Order columns exactly
+    fees_df = fees_df[FEES_COLUMNS]
+
+    return fees_df
 
 
 # -------------------------

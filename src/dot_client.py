@@ -11,6 +11,7 @@ import logging
 import os
 import time
 import uuid
+import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -23,7 +24,6 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class DotResponse:
     """Raw response from Dot."""
-
     text: str
     usage: dict | None = None
 
@@ -108,24 +108,22 @@ class LiveDotClient(DotClient):
     """Real Dot API client.
 
     Sends a chat message to the Dot API and returns the assistant response.
-    The request body matches Dot's schema::
 
-        {
-            "chat_id": "<caller-supplied id>",
-            "messages": [{"role": "user", "content": "<prompt>"}]
-        }
-
-    The response is expected immediately (no polling).
+    Notes:
+    - This client expects a synchronous response (no explicit job polling).
+    - For long-running agentic queries, we MUST set a long read timeout.
+    - We MUST keep chat_id stable across retries, otherwise we restart server work.
 
     Environment variables (or .env file):
         DOT_API_KEY:  API authentication key (required).
         DOT_BASE_URL: API base URL, e.g. https://test.getdot.ai (required).
+        DOT_TIMEOUT_SECONDS: Override total/read timeout (optional).
 
     Args:
         api_key:      Override for DOT_API_KEY env var.
         base_url:     Override for DOT_BASE_URL env var.
-        mode:         ``'agentic'`` (POST /api/agentic) or ``'ask'`` (POST /api/ask).
-        timeout:      HTTP request timeout in seconds.
+        mode:         'agentic' (POST /api/agentic) or 'ask' (POST /api/ask).
+        timeout_s:    Read timeout in seconds (default: 3600s).
     """
 
     def __init__(
@@ -133,7 +131,7 @@ class LiveDotClient(DotClient):
         api_key: str | None = None,
         base_url: str | None = None,
         mode: str = "agentic",
-        timeout: float = 600.0,
+        timeout_s: float = 3600.0,
     ) -> None:
         # Best-effort .env loading
         try:
@@ -144,15 +142,11 @@ class LiveDotClient(DotClient):
 
         self.api_key = api_key or os.environ.get("DOT_API_KEY", "")
         if not self.api_key:
-            raise ValueError(
-                "DOT_API_KEY must be set via env var, .env file, or api_key parameter"
-            )
+            raise ValueError("DOT_API_KEY must be set via env var, .env file, or api_key parameter")
 
         self.base_url = (base_url or os.environ.get("DOT_BASE_URL", "")).rstrip("/")
         if not self.base_url:
-            raise ValueError(
-                "DOT_BASE_URL must be set via env var, .env file, or base_url parameter"
-            )
+            raise ValueError("DOT_BASE_URL must be set via env var, .env file, or base_url parameter")
 
         if mode not in ("ask", "agentic"):
             raise ValueError(f"mode must be 'ask' or 'agentic', got {mode!r}")
@@ -162,21 +156,33 @@ class LiveDotClient(DotClient):
         env_timeout = os.environ.get("DOT_TIMEOUT_SECONDS")
         if env_timeout:
             try:
-                timeout = float(env_timeout)
+                timeout_s = float(env_timeout)
             except ValueError:
                 pass
-        self.timeout = timeout
+
+        self.timeout_s = float(timeout_s)
+
+        # Explicit, long read timeout. Connect/write/pool can stay smaller.
+        timeout = httpx.Timeout(
+            connect=10.0,
+            read=self.timeout_s,   # critical for long agentic runs
+            write=60.0,
+            pool=60.0,
+        )
+
+        # Keepalive + connection pooling helps with concurrency
+        limits = httpx.Limits(max_keepalive_connections=20, max_connections=50)
 
         self._client = httpx.Client(
             base_url=self.base_url,
             headers=self._build_headers(),
             timeout=timeout,
+            limits=limits,
         )
+
         logger.info(
             "LiveDotClient initialized: base_url=%s, mode=%s, timeout=%.0fs",
-            self.base_url,
-            self.mode,
-            timeout,
+            self.base_url, self.mode, self.timeout_s,
         )
 
     def preflight(self) -> dict:
@@ -192,7 +198,13 @@ class LiveDotClient(DotClient):
         endpoint = f"/api/{self.mode}"
         start = time.monotonic()
         try:
-            resp = self._client.post(endpoint, json=payload)
+            # Shorter timeout for preflight so it fails fast
+            with httpx.Client(
+                base_url=self.base_url,
+                headers=self._build_headers(),
+                timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=10.0),
+            ) as c:
+                resp = c.post(endpoint, json=payload)
             elapsed = round(time.monotonic() - start, 2)
             body_preview = resp.text[:500]
             return {
@@ -220,17 +232,7 @@ class LiveDotClient(DotClient):
 
     @staticmethod
     def _extract_assistant_text(data: dict[str, Any]) -> str:
-        """Extract the assistant's message text from the API response.
-
-        Handles multiple response shapes:
-        - ``[{"role": "assistant", "content": "..."}]``  (agentic — list, normalized to messages)
-        - ``{"messages": [{"role": "assistant", "content": "..."}]}``
-        - ``{"explanation": "..."}``  (/api/ask response)
-        - ``{"response": "..."}``
-        - ``{"text": "..."}``
-        - Agentic tool_calls: ``display_to_user`` with results in arguments
-        - Agentic tool responses: ``additional_data.formatted_result``
-        """
+        """Extract the assistant's message text from the API response."""
         messages = data.get("messages", [])
         if isinstance(messages, list):
             # Shape 1a: assistant message with non-empty content
@@ -241,11 +243,10 @@ class LiveDotClient(DotClient):
                         return text
 
             # Shape 1b (agentic): assistant used display_to_user tool call
-            # Extract from tool response's formatted_result or tool_call arguments
             for msg in reversed(messages):
                 if not isinstance(msg, dict):
                     continue
-                # Check tool response additional_data.formatted_result
+                # Tool response additional_data.formatted_result
                 if msg.get("role") == "tool" and msg.get("name") == "display_to_user":
                     ad = msg.get("additional_data", {})
                     if isinstance(ad, dict):
@@ -253,11 +254,12 @@ class LiveDotClient(DotClient):
                         if isinstance(fr, list):
                             parts = []
                             for item in fr:
-                                if isinstance(item, dict) and item.get("data"):
+                                if isinstance(item, dict) and item.get("data") is not None:
                                     parts.append(str(item["data"]))
                             if parts:
                                 return "\n".join(parts)
-                # Check assistant tool_calls for display_to_user arguments
+
+                # Assistant tool_calls display_to_user arguments
                 if msg.get("role") == "assistant":
                     for tc in msg.get("tool_calls", []):
                         if isinstance(tc, dict):
@@ -272,7 +274,7 @@ class LiveDotClient(DotClient):
                                 except (ValueError, TypeError):
                                     pass
 
-        # Shape 2: direct response field (e.g. /api/ask returns {"explanation": "..."})
+        # Shape 2: direct response field
         for key in ("explanation", "response", "text", "answer"):
             val = data.get(key, "")
             if isinstance(val, str) and val.strip():
@@ -280,16 +282,22 @@ class LiveDotClient(DotClient):
 
         return ""
 
+    def _retry_after_seconds(self, resp: httpx.Response) -> float | None:
+        """Parse Retry-After header if present."""
+        ra = resp.headers.get("Retry-After")
+        if not ra:
+            return None
+        try:
+            return float(ra)
+        except ValueError:
+            return None
+
     def query(self, prompt: str, chat_id: str | None = None) -> DotResponse:
         """Send a prompt to Dot and return the response.
 
-        Args:
-            prompt:  The user message text.
-            chat_id: Deterministic chat identifier. Auto-generated UUID if None.
-
-        Raises:
-            DotHttpError: Non-200 HTTP status from Dot API.
-            DotEmptyResponseError: Response contained no assistant text.
+        Important:
+        - Keeps chat_id stable across retries to avoid restarting server work.
+        - Uses long read timeout (configured in __init__) for slow agentic queries.
         """
         if chat_id is None:
             chat_id = uuid.uuid4().hex
@@ -303,27 +311,50 @@ class LiveDotClient(DotClient):
         logger.debug("POST %s chat_id=%s (prompt length=%d)", endpoint, chat_id, len(prompt))
         start = time.monotonic()
 
-        # Retry on 502 or ReadTimeout (up to 2 attempts total)
-        max_retries = 2
-        last_exc = None
+        # Retries for transient conditions:
+        # - 429 rate limit
+        # - 502/503/504 upstream issues
+        # - httpx timeouts (read/connect)
+        max_retries = 3
+        last_exc: Exception | None = None
+        resp: httpx.Response | None = None
+
         for attempt in range(max_retries):
             try:
                 resp = self._client.post(endpoint, json=payload)
-                if resp.status_code == 502 and attempt < max_retries - 1:
-                    wait = 5 * (attempt + 1)
-                    logger.warning("502 on %s, retrying in %ds (attempt %d)", endpoint, wait, attempt + 1)
-                    time.sleep(wait)
-                    # Use fresh chat_id on retry to avoid stale state
-                    payload["chat_id"] = f"{chat_id}_r{attempt+1}"
+                if resp.status_code == 200:
+                    break
+
+                # Retry-able HTTP statuses
+                if resp.status_code in (429, 502, 503, 504) and attempt < max_retries - 1:
+                    ra = self._retry_after_seconds(resp)
+                    backoff = ra if ra is not None else (10 * (2 ** attempt))
+                    backoff += random.uniform(0, 3)  # jitter
+                    logger.warning(
+                        "HTTP %d on %s (chat_id=%s). Retrying in %.1fs (attempt %d/%d)",
+                        resp.status_code, endpoint, chat_id, backoff, attempt + 1, max_retries,
+                    )
+                    time.sleep(backoff)
                     continue
+
+                # Non-retryable or last attempt
                 break
-            except httpx.ReadTimeout:
+
+            except (httpx.ReadTimeout, httpx.ConnectTimeout) as exc:
+                last_exc = exc
                 if attempt < max_retries - 1:
-                    logger.warning("ReadTimeout on %s, retrying (attempt %d)", endpoint, attempt + 1)
-                    # Use fresh chat_id on retry
-                    payload["chat_id"] = f"{chat_id}_r{attempt+1}"
+                    backoff = (15 * (2 ** attempt)) + random.uniform(0, 3)
+                    logger.warning(
+                        "%s on %s (chat_id=%s). Retrying in %.1fs (attempt %d/%d)",
+                        type(exc).__name__, endpoint, chat_id, backoff, attempt + 1, max_retries,
+                    )
+                    time.sleep(backoff)
                     continue
                 raise
+
+        if resp is None:
+            # Should only happen if we kept throwing exceptions
+            raise DotApiError(f"Dot request failed without response: {last_exc}")
 
         if resp.status_code != 200:
             raise DotHttpError(resp.status_code, resp.text[:500])
@@ -345,5 +376,6 @@ class LiveDotClient(DotClient):
             usage={
                 "latency_ms": round(elapsed_ms),
                 "chat_id": chat_id,
+                "status_code": resp.status_code,
             },
         )

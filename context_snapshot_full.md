@@ -1,6 +1,6 @@
 # Dot Context Snapshot
 
-- Exported: **2026-02-12 13:43:36 UTC**
+- Exported: **2026-02-13 11:36:42 UTC**
 - Base URL: **https://test.getdot.ai**
 
 # Relationships
@@ -16,11 +16,11 @@
 - Name: **Fee Calculation SQL Query Guide**
 - Subtype: `note`
 - Active: **true**
-- Body length: **2800 chars**
+- Body length: **3056 chars**
 
 ### Body
 ```markdown
-## Fee Calculation Rules
+## Fee Calculation SQL Query Guide
 
 Always use SQL. Never guess.
 
@@ -55,16 +55,18 @@ For ANY question about fees for a merchant on a specific date or month:
 3. Filter fee rules: require monthly_volume IS NULL OR = volume_tier, AND monthly_fraud_level IS NULL OR = fraud_tier
 Skipping this returns too many fee IDs (superset error).
 
+### CRITICAL: "Applicable Fee IDs" Questions
+When asked which fee IDs apply to a merchant on a date/month:
+1. Query the ACTUAL TRANSACTIONS for that merchant/date from payments
+2. For EACH transaction, find ALL matching fee rules using the transaction's card_scheme, aci, is_credit, and computed intracountry PLUS merchant attributes and monthly tiers
+3. Return the UNION of all matching fee IDs across all transactions
+Do NOT just filter by merchant attributes — transaction-level fields (card_scheme, aci, is_credit, intracountry) MUST come from actual data.
+
 ### Fraud Questions
+- "Fraud" = has_fraudulent_dispute = True
+- "Top country for fraud" = highest fraud RATE (volume-based: fraud_EUR / total_EUR), NOT count
 - ip_country, issuing_country, acquirer_country are THREE DIFFERENT fields
 - Use whichever the question specifies
-- "Fraud" = has_fraudulent_dispute = True
-- General fraud questions: COUNT transactions
-- Monthly fraud tier (for fee matching): volume-based ratio from monthly_merchant_stats
-
-### Intracountry
-Compute per transaction: 1 if payments.issuing_country = payments.acquirer_country, else 0.
-Use payments.acquirer_country directly.
 
 ### Specificity Rule
 - "Which fee IDs apply?" → ALL matching IDs
@@ -72,9 +74,6 @@ Use payments.acquirer_country directly.
 
 ### Not Applicable
 No fines, penalties, or surcharges exist. Only fee rules. If asked about nonexistent concepts: Not Applicable.
-
-### Performance
-Prefer single aggregate queries. Avoid iterative per-rule or per-ACI loops. Use GROUP BY and window functions.
 
 ### Output
 FINAL_ANSWER: <answer>
@@ -84,7 +83,7 @@ FINAL_ANSWER: <answer>
 - Name: **DABStep Fee & Domain Instructions**
 - Subtype: `note`
 - Active: **true**
-- Body length: **5843 chars**
+- Body length: **5655 chars**
 
 ### Body
 ```markdown
@@ -102,15 +101,17 @@ Always use SQL. Never guess.
 
 ### Fee Formula
 fee = fixed_amount + (rate * eur_amount / 10000.0)
+- "relative fee" = rate (the variable basis-point component)
+- "fixed fee" = fixed_amount (per-transaction EUR)
 
-### Fee Matching
+### Fee Matching — ALL Criteria Must Match
 A fee rule matches when ALL its non-null/non-empty criteria are satisfied:
 - NULL or empty list [] = wildcard (matches everything)
 - card_scheme: exact match (never null)
 - account_type: JSON array like ['R','D'] — match if merchant's type is in the list, or list is empty
 - aci: JSON array like ['A','B'] — match if payment's ACI is in the list, or list is empty
 - merchant_category_code / mcc: JSON array of integers — match if merchant's MCC is in the list, or list is empty
-- is_credit: VARCHAR 'true'/'false'/NULL — NULL matches all
+- is_credit: VARCHAR 'true'/'false'/NULL — NULL matches all. In payments is_credit is BOOLEAN; cast for comparison.
 - intracountry: DOUBLE 1.0/0.0/NULL — 1 if issuing_country = acquirer_country, 0 otherwise, NULL matches all
 - capture_delay: match against merchant_data.capture_delay_bucket (NOT raw capture_delay)
 - monthly_volume: match against monthly_merchant_stats.volume_tier for that month
@@ -118,101 +119,76 @@ A fee rule matches when ALL its non-null/non-empty criteria are satisfied:
 
 ### MANDATORY: Monthly Tier Filter
 For ANY question about fees for a merchant on a specific date or month:
-1. Determine the month (day_of_year: Jan=1-31, Feb=32-59, Mar=60-90, etc.)
+1. Determine the month (day_of_year: Jan=1-31, Feb=32-59, Mar=60-90, Apr=91-120, May=121-151, Jun=152-181, Jul=182-212, Aug=213-243, Sep=244-273, Oct=274-304, Nov=305-334, Dec=335-365)
 2. Look up volume_tier and fraud_tier from monthly_merchant_stats for that merchant/year/month
 3. Filter fee rules: require monthly_volume IS NULL OR = volume_tier, AND monthly_fraud_level IS NULL OR = fraud_tier
 Skipping this returns too many fee IDs (superset error).
+
+### CRITICAL: "Applicable Fee IDs" for a Merchant on a Date/Month
+When asked "what fee IDs apply to merchant X on date/month Y":
+1. Get the ACTUAL TRANSACTIONS for that merchant on that date/month from payments table
+2. For EACH transaction, find ALL fee rules matching that transaction's attributes:
+   - card_scheme, aci, is_credit from the transaction
+   - intracountry = CASE WHEN issuing_country = acquirer_country THEN 1 ELSE 0 END
+   - account_type, merchant_category_code, capture_delay_bucket from merchant_data
+   - volume_tier, fraud_tier from monthly_merchant_stats
+3. Union ALL matching fee IDs across all transactions
+4. Return the union as the answer
+
+DO NOT just filter by merchant attributes alone — you MUST also filter by transaction-level attributes (card_scheme, aci, is_credit, intracountry) using actual transaction data.
+
+### Specificity Rule
+- "Which fee IDs apply?" → ALL matching IDs (union across all transactions)
+- "What fee is charged?" → most specific rule (most non-null/non-empty criteria); average if tied
+- Specificity = count of non-null, non-empty-list fields in the fee rule (card_scheme always counts as 1)
+
+### Fee Delta Questions
+When asked "what delta if fee X's rate changed to Y":
+1. Find all transactions where fee X matches (using all matching criteria)
+2. For each matching transaction: delta_txn = (new_rate - old_rate) * eur_amount / 10000.0
+3. Sum all delta_txn values
+4. "relative fee" means the rate field (basis points)
+
+### ACI Steering / Optimization Questions
+When asked "which ACI minimizes fees for fraudulent transactions":
+1. Get the fraud transactions for the merchant/period (has_fraudulent_dispute = True)
+2. For each candidate ACI (A through G):
+   - For each fraud txn, replace aci with the candidate
+   - Find matching fee rules for the modified transaction
+   - Select the most specific rule(s), average if tied
+   - Sum fees across all fraud transactions
+3. Pick the ACI with the lowest total
 
 ### Fraud Questions
 - ip_country, issuing_country, acquirer_country are THREE DIFFERENT fields
 - Use whichever the question specifies
 - "Fraud" = has_fraudulent_dispute = True
-- General fraud questions: COUNT transactions
-- Monthly fraud tier (for fee matching): volume-based ratio from monthly_merchant_stats
+- **CRITICAL: "Top country for fraud" or "highest fraud" = highest fraud RATE (volume-based)**
+  - Fraud rate = SUM(eur_amount WHERE has_fraudulent_dispute) / SUM(eur_amount) per group
+  - This is a EUR volume RATIO, NOT a transaction count
+  - Only use transaction count if the question explicitly says "number of fraud transactions"
+- Monthly fraud tier (for fee matching): use pre-computed fraud_tier from monthly_merchant_stats
 
 ### Intracountry
 Compute per transaction: 1 if payments.issuing_country = payments.acquirer_country, else 0.
-Use payments.acquirer_country directly.
-
-### Specificity Rule
-- "Which fee IDs apply?" → ALL matching IDs
-- "What fee is charged?" → most specific rule (most non-null criteria); average if tied
+Use payments.acquirer_country directly (it is ALREADY a country code, not an acquirer name).
 
 ### Not Applicable
-No fines, penalties, or surcharges exist. Only fee rules. If asked about nonexistent concepts: Not Applicable.
+No fines, penalties, or surcharges exist in the data. Only fee rules.
+If asked about nonexistent concepts (fines, penalties, surcharges): answer "Not Applicable".
+
+### Answer Formatting Rules
+- Follow the Guidelines section EXACTLY for format.
+- For multiple choice: answer with the EXACT option text including letter (e.g., 'B. BE', not just 'NL').
+- For decimals: match exact decimal places requested.
+- For lists: comma-separated, no brackets.
+- For fee ID lists: just the numbers, comma-separated.
 
 ### Performance
 Prefer single aggregate queries. Avoid iterative per-rule or per-ACI loops. Use GROUP BY and window functions.
 
 ### Output
 FINAL_ANSWER: <answer>
-
-
-## MANDATORY: Monthly Tier Lookup for Fee Questions
-For ANY question about fees involving a specific merchant or time period:
-1. FIRST look up the merchant's monthly stats:
-   ```sql
-   SELECT volume_tier, fraud_tier
-   FROM uploads.main.monthly_merchant_stats
-   WHERE merchant = '<merchant_name>' AND year = <year> AND month = <month>;
-   ```
-2. THEN filter the fees table using those tiers:
-   ```sql
-   WHERE (monthly_volume IS NULL OR monthly_volume = '<volume_tier>')
-     AND (monthly_fraud_level IS NULL OR monthly_fraud_level = '<fraud_tier>')
-   ```
-3. NEVER skip this step — omitting tier filters produces a SUPERSET of fees → WRONG ANSWER.
-
-
-## CRITICAL: day_of_year to Month Conversion for Fee Lookups
-When a question specifies a date (e.g., 'the 10th of 2023' means day_of_year=10):
-1. Convert day_of_year to month: Jan=1-31, Feb=32-59, Mar=60-90, Apr=91-120, May=121-151, Jun=152-181, Jul=182-212, Aug=213-243, Sep=244-273, Oct=274-304, Nov=305-334, Dec=335-365
-2. Look up monthly_merchant_stats for that merchant/year/month
-3. Use volume_tier and fraud_tier to filter fees
-4. Also filter by the merchant's account_type, mcc, capture_delay_bucket, and the payment's card_scheme, aci, is_credit, intracountry
-5. intracountry = CASE WHEN issuing_country = acquirer_country THEN 1 ELSE 0 END
-
-
-
-## Answer Formatting Rules
-- Follow the Guidelines section EXACTLY for format.
-- For multiple choice: answer with the EXACT option text including letter (e.g., 'B. BE', not just 'NL').
-- For decimals: match exact decimal places requested.
-- For lists: comma-separated, no brackets.
-
-
-
-## Fee Matching Filter Logic
-- NULL or empty list in a fee field = wildcard (matches everything).
-- For list fields: the value must be IN the list.
-- intracountry: CASE WHEN issuing_country = acquirer_country THEN 1 ELSE 0 END.
-
-
-## Fee Calculation Precision
-fee = fixed_amount + (rate * eur_amount / 10000.0)
-- Use DOUBLE precision throughout.
-- Sum fees across ALL matching transactions.
-- When comparing scenarios (delta), compute each scenario's total separately then subtract: delta = new_total - old_total.
-- Preserve full decimal precision unless the guidelines request rounding.
-
-
-
-## Fee Rule Matching Checklist
-To find applicable fee IDs for a merchant+transaction:
-1. Get merchant's: account_type, merchant_category_code, capture_delay_bucket, acquirer
-2. Get transaction's: card_scheme, aci, is_credit
-3. Compute: intracountry = (issuing_country = acquirer_country)
-4. Get monthly tiers: volume_tier, fraud_tier from monthly_merchant_stats
-5. A fee matches if ALL non-null criteria match:
-   - card_scheme = exact match
-   - account_type: list contains merchant's type (or empty = all)
-   - aci: list contains payment's ACI (or empty = all)
-   - mcc: list contains merchant's MCC (or empty = all)
-   - is_credit: matches or NULL
-   - intracountry: matches or NULL
-   - capture_delay: matches merchant_data.capture_delay_bucket or NULL
-   - monthly_volume: matches volume_tier or NULL
-   - monthly_fraud_level: matches fraud_tier or NULL
 ```
 
 # Tables
@@ -223,77 +199,41 @@ To find applicable fee IDs for a merchant+transaction:
 - Rows: **138236**
 
 ### Description
-# Payment Transactions
+# uploads.main.payments
 
-Each row represents a single card payment transaction processed by the payment processor, uniquely identified by `psp_reference`. This is the core transaction fact table for payment analysis, fee calculation, and merchant performance monitoring.
+Transaction fact table containing one row per payment. This is the core table for fee calculation, fraud analysis, and payment analytics.
 
-## Business Context
+## Key Columns
 
-This table captures the complete lifecycle of payment transactions from authorization through settlement. Transactions flow from cardholders through merchants, card schemes (TransactPlus, GlobalCard, NexPay, SwiftCharge), acquiring banks, and issuing banks.
+- **psp_reference** - Unique payment transaction identifier (primary key)
+- **merchant** - Name of the business accepting payment (joins to merchant_data)
+- **card_scheme** - Payment network (TransactPlus, GlobalCard, NexPay, SwiftCharge)
+- **year, day_of_year, hour_of_day, minute_of_hour** - Transaction timestamp components
+- **is_credit** - Boolean flag: credit (1) or debit (0) card
+- **eur_amount** - Transaction amount in EUR
+- **ip_country** - Country from IP address
+- **issuing_country** - Country of bank that issued the card
+- **acquirer_country** - Country code of acquiring bank
+- **device_type** - Device used for transaction
+- **shopper_interaction** - Ecommerce or POS
+- **aci** - Authorization Characteristics Indicator (A-G, see Fee Calculation Rules note)
+- **has_fraudulent_dispute** - Boolean flag for fraud (used in fraud rate calculation)
+- **is_refused_by_adyen** - Boolean flag for refusal
 
-## Key Use Cases
+## Intracountry Calculation
 
-### Fee Calculation and Revenue Analysis
-- Join with merchant metadata (merchant_data.json) to get account_type, MCC, capture_delay
-- Join with fee rules (fees.json) matching on card_scheme, is_credit, aci, merchant characteristics
-- Calculate fees using: `fee = fixed_amount + (rate × eur_amount / 10000)`
-- Identify domestic vs cross-border by comparing issuing_country with acquirer_country
+For fee matching, calculate:
+```sql
+intracountry = CASE WHEN issuing_country = acquirer_country THEN 1 ELSE 0 END
+```
 
-### Fraud Monitoring and Risk Management
-- **Fraud Rate (VOLUME-based)**: `SUM(CASE WHEN has_fraudulent_dispute = 'True' THEN eur_amount ELSE 0 END) / SUM(eur_amount)` by merchant/month - this is the ratio used for fee tier matching
-- **Fraud Transaction Count**: `COUNT(*) WHERE has_fraudulent_dispute = 'True'` - use for distribution analysis and rankings
-- **Fraud Volume EUR**: `SUM(eur_amount WHERE has_fraudulent_dispute = 'True')` - total EUR amount of fraudulent transactions
-- Target fraud rate <7.2% for optimal fees; >8.3% triggers significant fee increases
-- Compare ip_country vs issuing_country vs acquirer_country to detect geo-mismatches
-- Monitor fraud by ACI type - Type G (non-3D Secure) highest risk
+## Usage Notes
 
-### Authorization Performance
-- Authorization rate: `1 - (SUM(is_refused_by_adyen) / COUNT(*))` - target >95%
-- Analyze refusals by card_scheme, issuing_country, device_type to identify patterns
-- Monitor by merchant to identify technical or risk issues
-
-### Merchant Performance and Optimization
-- Monthly volume by merchant (critical for fee tier qualification)
-- Channel mix analysis (Ecommerce vs POS) - POS typically lower fees
-- ACI distribution - ensure optimal authentication methods for fee minimization
-- Domestic transaction percentage - maximize for lower costs
-
-## Data Quality Notes
-
-**Timestamp Construction**: Date/time stored as components requiring reconstruction:
-- Full timestamp = `year + day_of_year + hour_of_day + minute_of_hour`
-- day_of_year is 1-366 format (Julian day)
-- Consider creating derived timestamp field for time-series analysis
-
-**Anonymized Identifiers**: Hashed values enable privacy-safe analysis:
-- `card_number`, `email_address`, `ip_address` are one-way hashed
-- Can be used for repeat-customer, velocity, and behavior analyses
-- ~19% NULL rate on ip_address, ~9% NULL on email_address
-- **Repeat Customer Definition**: A shopper with the same `email_address` appearing in >1 transaction (use `GROUP BY email_address HAVING COUNT(*) > 1`)
-
-**Geographic Dimensions**: Three country fields serve different purposes:
-- `ip_country`: Shopper's location at transaction time
-- `issuing_country`: Bank that issued the card
-- `acquirer_country`: Country code of the acquiring bank processing for merchant (ALREADY a country code like "NL", "US", "IT" - NOT an acquirer name)
-- Comparing these reveals cross-border patterns and fraud indicators
-- **CRITICAL**: `acquirer_country` is already a country code. Do NOT confuse with acquirer names from `acquirer_countries` table which maps acquirer NAMES to countries.
-
-## Critical Relationships
-
-- **merchant** → merchant_data (account_type, MCC, capture_delay, primary_acquirer)
-- **acquirer_country** is ALREADY a country code (no lookup needed) - compares directly with issuing_country for intracountry calculation
-- **merchant_data.primary_acquirer** (acquirer NAME) → acquirer_countries.acquirer (to get acquirer's country)
-- **card_scheme + merchant attributes + transaction attributes** → fees (fee rule matching)
-- **merchant_data.merchant_category_code** → merchant_category_codes.mcc (industry descriptions)
-
-## Key Performance Indicators (KPIs)
-
-1. **Authorization Rate**: Target >95% - percentage of non-refused transactions
-2. **Fraud Rate (VOLUME-based)**: Target <7.2% - ratio of fraudulent EUR volume to total EUR volume (NOT transaction count)
-3. **Chargeback Rate**: Target <1% - monitor for scheme compliance
-4. **Average Transaction Value**: By merchant, scheme, channel
-5. **Domestic Transaction %**: Maximize for fee optimization
-6. **ACI Distribution**: Ensure secure authentication methods (B, C, F over G)
+- Use this table as the base for all fee calculations
+- Join to `merchant_data` for merchant attributes needed in fee matching
+- Join to `monthly_merchant_stats` for volume/fraud tiers when querying specific months
+- For fraud rate: use EUR volume ratio, not transaction count
+- Anonymized fields (ip_address, email_address, card_number) are hashed for privacy
 
 ### Column comments (non-empty)
 - `psp_reference`: unique payment transaction identifier
@@ -324,47 +264,20 @@ This table captures the complete lifecycle of payment transactions from authoriz
 - Rows: **769**
 
 ### Description
-# Merchant Category Codes (MCC) Reference
+# uploads.main.merchant_category_codes
 
-This is a dimension/lookup table mapping four-digit Merchant Category Codes to their human-readable descriptions. MCCs are standardized codes assigned by card schemes (Visa, Mastercard) to classify merchant business types.
+Reference table mapping 4-digit MCC codes to industry descriptions. Used for lookup/reference only.
 
-## Purpose
+## Key Columns
 
-- **Transaction Enrichment**: Join to payments or merchant data to add industry labels
-- **Industry Analysis**: Group transactions by category for reporting and benchmarking
-- **Fee Calculation**: MCCs are a key input to fee rule matching - different industries have different processing costs and risk profiles
-- **Risk Assessment**: High-risk MCCs (travel, digital goods, gambling) typically have higher fees and stricter monitoring
+- **mcc** - Four-digit Merchant Category Code (primary key)
+- **description** - Human-readable industry description
 
-## MCC Code Structure
+## Usage
 
-- **First 2 digits**: Broad industry category (e.g., 54xx = Restaurants, 70xx = Hotels/Lodging)
-- **Last 2 digits**: Specific subcategory
+Join to `merchant_data.merchant_category_code` to get industry labels for reporting and analysis.
 
-## Common MCC Examples in Merchant Data
-
-- **5812**: Restaurants, Eating Places (Hospitality merchants)
-- **5814**: Fast Food Restaurants (Hospitality merchants)
-- **5942**: Bookstores (Retail merchants)
-- **7372**: Computer Programming, Data Processing (Digital/SaaS merchants)
-- **7993**: Golf Courses - Public (Franchise/Platform merchants)
-- **7997**: Membership Clubs - Sports, Recreation, Athletic (Franchise merchants)
-- **8011**: Doctors and Physicians
-- **8021**: Dentists and Orthodontists
-- **8062**: Hospitals
-- **8299**: Schools and Educational Services (SaaS/Platform merchants)
-
-## Usage in Fee Calculation
-
-MCCs influence processing fees through:
-1. **Interchange rate qualification**: Some MCCs receive preferential rates (healthcare, utilities)
-2. **Risk premiums**: High-risk MCCs (travel, digital) pay higher fees
-3. **Fee rule matching**: fees.json contains MCC-specific rules with different fixed_amount and rate values
-
-## Data Quality Notes
-
-- The "Unnamed: 0" column is an internal index and can be ignored for analysis
-- Each MCC is unique and maps to exactly one description
-- Some descriptions include specific brand names (airlines, hotel chains) for specialized industry codes
+Join key: `merchant_data.merchant_category_code = merchant_category_codes.mcc`
 
 ### Column comments (non-empty)
 - `mcc`: Four-digit Merchant Category Code assigned by card schemes (Visa, Mastercard, etc.) to classify merchant business types. Used for risk assessment, fraud detection, and fee determination. Over 400 standard codes exist. Join to merchant data or derive from merchant table to understand industry distribution. Critical for fee calculation - different MCCs have different interchange rates and risk profiles.
@@ -376,187 +289,28 @@ MCCs influence processing fees through:
 - Rows: **8**
 
 ### Description
-# Acquirer-Country Mapping
+# uploads.main.acquirer_countries
 
-Dimension table mapping acquiring banks to their operating countries. Acquirers are financial institutions that process card payment transactions on behalf of merchants.
+Reference table mapping acquirer names to their operating countries. Used for lookup/reference only.
 
-## Purpose
+## Key Columns
 
-- **Geographic Routing Analysis**: Understand which acquirers operate in which countries
-- **Intracountry Transaction Identification**: Critical for fee optimization - when issuing_country = acquirer country, fees are significantly lower (20-50% reduction)
-- **Merchant-Acquirer Relationships**: Cross-reference with merchant_data.json to see which acquirers each merchant uses
-- **Strategic Routing**: Enable analysis of routing strategies to maximize domestic transaction percentage
+- **acquirer** - Acquirer bank name (primary key)
+- **country_code** - ISO 2-letter country code where acquirer operates
 
-## Business Context
+## Usage Note
 
-Acquiring banks are regional - each operates in specific countries. Merchants may work with multiple acquirers to support transactions in different markets.
+This is a **lookup table only**. The `payments.acquirer_country` field is already a country code (e.g., "NL", "US", "IT") and does NOT require joining to this table.
 
-**Best Practice**: Route transactions through local acquirers (same country as card issuer) to minimize fees and maximize authorization rates.
+Use this table to:
+- Map `merchant_data.primary_acquirer` (acquirer name) to countries
+- Understand acquirer geographic coverage
 
-## Available Acquirers
-
-- **gringotts** (GB - United Kingdom)
-- **medici** (IT - Italy)
-- **bank_of_springfield** (US - United States)
-- **dagoberts_vault** (NL - Netherlands)
-- **dagoberts_geldpakhuis** (NL - Netherlands)
-- **tellsons_bank** (GB - United Kingdom)
-- **the_savings_and_loan_bank** (US - United States)
-- **lehman_brothers** (US - United States)
-
-## Usage Examples
-
-**Identify Cross-Border Transactions**:
-```sql
-SELECT *
-FROM payments p
-LEFT JOIN acquirer_countries ac ON p.acquirer_country = ac.country_code
-WHERE p.issuing_country != ac.country_code
-```
-
-**Calculate Domestic Transaction Rate by Merchant**:
-```sql
-SELECT merchant,
-  SUM(CASE WHEN issuing_country = acquirer_country THEN 1 ELSE 0 END) / COUNT(*) as domestic_rate
-FROM payments
-GROUP BY merchant
-```
-
-## Relationship to Fee Calculation
-
-The `intracountry` field in fee rules (fees.json) is determined by comparing:
-- **issuing_country** (from payments table)
-- **country_code** (from this table, via acquirer_country)
-
-When they match: `intracountry = true` → Lower fees
-When they differ: `intracountry = false` → Higher cross-border fees
+**Do NOT use for intracountry calculation** - `payments.acquirer_country` is already the country code needed.
 
 ### Column comments (non-empty)
 - `acquirer`: Unique identifier for acquiring banks that process card payments on behalf of merchants. Examples: gringotts, medici, bank_of_springfield, dagoberts_vault. Each merchant works with one or more acquirers (listed in merchant_data.json). Use to map acquirer_country in payments table to specific acquiring bank names.
 - `country_code`: ISO 2-letter country code where the acquirer operates. Critical for identifying domestic (intracountry) vs cross-border transactions. When payments.issuing_country = acquirer_countries.country_code (via payments.acquirer_country), the transaction qualifies for lower 'intracountry' fees. Use to optimize routing strategies for fee reduction.
-
-## Table: `uploads.main.fees`
-- Name: **uploads.main.fees**
-- Active: **true**
-- Rows: **1000**
-
-### Description
-# Fee Rules
-
-Each row represents a single fee pricing rule used to calculate per-transaction processing fees. This table contains **1,000 fee rules** covering all combinations of merchant and transaction characteristics.
-
-## Fee Calculation Formula
-
-```
-fee = fixed_amount + (rate × eur_amount / 10000.0)
-```
-
-Where:
-- `fixed_amount` - Per-transaction fee in EUR (e.g., €0.10)
-- `rate` - Basis points (e.g., 19 = 0.19%)
-- `eur_amount` - Transaction amount from payments table
-
-## Wildcard Matching Logic
-
-**CRITICAL**: Fee rules use **wildcard matching** where empty list (`[]`) or NULL values mean "applies to all":
-
-- Empty list `[]` or NULL in a column = rule matches ANY value for that criterion
-- A fee rule matches a payment if **ALL non-empty/non-null criteria match**
-- List fields (account_type, aci, mcc/merchant_category_code) match if the value is IN the list OR list is empty `[]`
-- When multiple rules match, context determines behavior:
-  - **"Which fee IDs apply/are applicable?"** → Return ALL matching fee IDs (no specificity filter)
-  - **"What fee would be charged?" / "Total fees" / "Calculate the fee"** → Select the MOST SPECIFIC rule (most non-null/non-empty criteria)
-- **Specificity count** = number of non-null, non-empty-list criteria in the fee rule. Higher count = more specific.
-
-### Matching Criteria
-
-A fee rule MATCHES a payment/merchant combination if **ALL** of the following are true:
-
-| Fee Column | Matches Against | Source | Match Logic |
-|-----------|----------------|--------|-------------|
-| `card_scheme` | `card_scheme` | payments | ALWAYS required (never null), must match exactly |
-| `is_credit` | `is_credit` | payments | NULL OR equals payment value (with type casting) |
-| `aci` | `aci` | payments | Empty list `[]` OR payment value IN list |
-| `account_type` | `account_type` | merchant_data | Empty list `[]` OR merchant value IN list |
-| `mcc` / `merchant_category_code` | `merchant_category_code` | merchant_data | Empty list `[]` OR merchant MCC IN list |
-| `capture_delay` | `capture_delay_bucket` | merchant_data | NULL OR matches merchant's bucket (see mapping below) |
-| `monthly_fraud_level` | (computed monthly) | payments | NULL OR computed fraud ratio matches tier |
-| `monthly_volume` | (computed monthly) | payments | NULL OR computed EUR volume matches tier |
-| `intracountry` | (computed per txn) | payments | NULL OR matches (issuing_country = acquirer_country) |
-
-### Intracountry Calculation
-
-The `intracountry` field requires a runtime calculation:
-
-```sql
-intracountry = CASE
-  WHEN issuing_country = acquirer_country THEN 1
-  ELSE 0
-END
-```
-
-- `1` = Domestic transaction (same country)
-- `0` = Cross-border transaction (different countries)
-
-## Fee Matching Rules (Semantic)
-
-**For date/month-specific fee questions**: Use the monthly_merchant_stats table to look up the merchant's volume_tier and fraud_tier for that month. Then filter fee rules accordingly.
-
-**List column matching**: The columns account_type, aci, and merchant_category_code/mcc contain JSON-style arrays like ['R', 'D'] or [5812, 5942]. A fee rule matches if the array is empty [] (matches all) or the target value appears in the array.
-
-**Intracountry**: The intracountry column is 1.0 (domestic), 0.0 (cross-border), or NULL (matches all). Compute from payments: 1 if issuing_country = acquirer_country, else 0.
-
-**is_credit**: Stored as VARCHAR text in fees ("true"/"false"/NULL). In payments it is BOOLEAN. Compare appropriately.
-
-**capture_delay**: Use merchant_data.capture_delay_bucket which already maps to the fee bucket values (immediate, <3, 3-5, >5, manual). Match directly against fees.capture_delay.
-
-## Column Details
-
-### Rule Segmentation
-
-- **`card_scheme`**: TransactPlus, GlobalCard, NexPay, SwiftCharge (or empty = all)
-- **`is_credit`**: "true" (credit card), "false" (debit card), or empty = all
-- **`aci`**: Array of ACI codes (A-G) or empty = all authentication types
-- **`account_type`**: Array of merchant types (R, D, H, F, S, O) or empty = all
-- **`mcc`**: Array of merchant category codes or empty = all industries
-- **`capture_delay`**: immediate, <3, 3-5, >5, manual, or empty = all
-- **`monthly_volume`**: <100k, 100k-1m, 1m-5m, >5m, or empty = all (80% NULL)
-- **`monthly_fraud_level`**: <7.2%, 7.2%-7.7%, 7.7%-8.3%, >8.3%, or empty = all (90% NULL)
-- **`intracountry`**: 1.0 (domestic), 0.0 (cross-border), or NULL = all
-
-### Fee Components
-
-- **`fixed_amount`**: Per-transaction fixed fee (€0.01 to €0.12)
-- **`rate`**: Variable fee in basis points (25 to 86 bps typical range)
-
-## Key Use Cases
-
-1. **Fee Calculation**: Join with payments + merchant_data to calculate actual fees
-2. **Fee Optimization**: Identify which merchant behaviors trigger higher fees
-3. **Scenario Modeling**: Predict fee impact of volume changes, authentication improvements
-4. **Revenue Forecasting**: Model fee income under different transaction mixes
-
-## Data Quality
-
-- **Sample size**: 1,000 rules covering all dimensional combinations
--
-…(truncated)…
-
-### Column comments (non-empty)
-- `rule_id`: unique fee rule identifier
-- `card_scheme`: card network (e.g., TransactPlus, SwiftCharge)
-- `is_credit`: Credit card flag. Values: "true" (credit card only), "false" (debit card only), NULL (WILDCARD - applies to BOTH credit AND debit). CRITICAL WILDCARD RULE: When filtering for "credit transactions", include rules where is_credit = NULL OR is_credit = 'true' (exclude 'false'). When filtering for "debit transactions", include rules where is_credit = NULL OR is_credit = 'false' (exclude 'true'). NULL means the fee rule applies to ALL card types. payments.is_credit is BOOLEAN, this field is VARCHAR - cast both to TEXT for comparison.
-- `aci`: authorization characteristics indicator codes (authentication method)
-- `account_type`: merchant account type(s) (e.g., R, D, H, F, S)
-- `mcc`: merchant category code(s) (industry classification)
-- `capture_delay`: settlement timing after authorization (immediate, <3, 3-5, >5, manual)
-- `fixed_amount`: per-transaction fixed fee (EUR)
-- `rate`: variable fee in basis points (0.01% units)
-- `ID`: unique row identifier (primary key)
-- `monthly_fraud_level`: monthly fraud rate tier (e.g., <3%, 3%-5%, >8.3%)
-- `monthly_volume`: monthly transaction volume tier (e.g., <100k, 100k-1m, >5m)
-- `merchant_category_code`: merchant category code(s) (alternative to mcc)
-- `intracountry`: MANDATORY MATCHING CRITERION. Domestic vs cross-border indicator. Values: 1.0 (domestic - issuing_country = acquirer_country), 0.0 (cross-border - different countries), NULL (WILDCARD - applies to both domestic and cross-border). Calculate at runtime: CASE WHEN issuing_country = acquirer_country THEN 1 ELSE 0 END. When matching fee rules, if intracountry is NULL, the rule applies to ALL transactions. If 1.0, only domestic. If 0.0, only cross-border. Domestic transactions have significantly lower fees.
 
 ## Table: `uploads.main.merchant_data`
 - Name: **uploads.main.merchant_data**
@@ -564,7 +318,31 @@ END
 - Rows: **30**
 
 ### Description
-Each row represents a merchant configuration/profile used to enrich transactions for analytics and fee-rule matching. Key attributes include account_type, merchant_category_code (MCC), and capture_delay (raw setting plus a pre-bucketed capture_delay_bucket) which drive pricing, settlement-timing analysis, and segmentation by industry/business model. Use this table to join onto payments by merchant, and to look up MCC metadata and acquirer geography via the referenced merchant_category_codes and acquirer_countries tables (primary_acquirer/acquirer may contain multiple acquirers encoded as a string).
+# uploads.main.merchant_data
+
+Merchant profile table used for fee matching dimensions. One row per merchant.
+
+## Key Columns
+
+- **merchant** - Unique merchant identifier (primary key, joins to payments.merchant)
+- **account_type** - Business model classification (R/D/H/F/S/O)
+- **merchant_category_code** - 4-digit MCC code (joins to merchant_category_codes)
+- **capture_delay** - Raw capture timing setting
+- **capture_delay_bucket** - Pre-computed bucket for fee matching (immediate, <3, 3-5, >5, manual)
+- **primary_acquirer** - Main acquiring bank(s) for merchant
+- **acquirer** - All acquiring banks associated with merchant
+
+## Usage in Fee Matching
+
+This table provides merchant-level attributes required for fee matching:
+- Use **capture_delay_bucket** (not raw capture_delay) when matching to fees.capture_delay
+- account_type and merchant_category_code are matched against fees table wildcards
+- Join on payments.merchant = merchant_data.merchant
+
+## Critical Rules
+
+- ALWAYS use `capture_delay_bucket` for fee matching, never remap from raw `capture_delay`
+- primary_acquirer links to acquirer_countries table for acquirer geography lookup
 
 ### Column comments (non-empty)
 - `merchant`: unique merchant identifier
@@ -581,42 +359,46 @@ Each row represents a merchant configuration/profile used to enrich transactions
 - Rows: **60**
 
 ### Description
-# Monthly Merchant Stats - AUTHORITATIVE SOURCE FOR FEE MATCHING
+# uploads.main.monthly_merchant_stats
 
-Each row represents a merchant's aggregated payment performance for a given **natural calendar month** (year, month), uniquely identified by (merchant, year, month).
+Precomputed monthly tiers for volume and fraud. One row per merchant/month. **MANDATORY for date/month fee calculations.**
 
-## Purpose
+## Key Columns
 
-This is the **AUTHORITATIVE PRE-COMPUTED SOURCE** for:
-- `volume_tier` - Used to filter `fees.monthly_volume` during fee rule matching
-- `fraud_tier` - Used to filter `fees.monthly_fraud_level` during fee rule matching
+- **merchant, year, month** - Composite primary key
+- **total_volume_eur** - Total payment volume in EUR for merchant/month
+- **total_txn_count** - Total transaction count
+- **fraud_volume_eur** - Fraudulent payment volume in EUR
+- **fraud_txn_count** - Fraudulent transaction count
+- **fraud_rate** - fraud_volume_eur / total_volume_eur (volume-based ratio)
+- **volume_tier** - Pre-computed tier (<100k, 100k-1m, 1m-5m, >5m)
+- **fraud_tier** - Pre-computed tier (<7.2%, 7.2%-7.7%, 7.7%-8.3%, >8.3%)
 
-**CRITICAL FOR FEE MATCHING**: When questions reference a specific date or month, ALWAYS use this table to lookup the merchant's `volume_tier` and `fraud_tier` for that month. Do NOT recompute from payments table unless this table is unavailable.
+## Critical Usage Rules
 
-## Data Dictionary
+**MANDATORY for fee matching on specific dates/months:**
+- Use `volume_tier` to match against `fees.monthly_volume`
+- Use `fraud_tier` to match against `fees.monthly_fraud_level`
+- **NEVER skip this table** - failure to include monthly tiers returns incorrect superset of fees
 
-- **total_volume_eur**: SUM(eur_amount) for merchant/month
-- **fraud_volume_eur**: SUM(eur_amount WHERE has_fraudulent_dispute = 'True') for merchant/month
-- **fraud_rate**: fraud_volume_eur / total_volume_eur (VOLUME-based ratio, NOT transaction count)
-- **volume_tier**: Pre-computed tier (<100k, 100k-1m, 1m-5m, >5m) matching `fees.monthly_volume` values
-- **fraud_tier**: Pre-computed tier (<7.2%, 7.2%-7.7%, 7.7%-8.3%, >8.3%) matching `fees.monthly_fraud_level` values
+**Date to month conversion:**
+- Days 1-31 → Month 1
+- Days 32-59 → Month 2
+- Days 60-90 → Month 3
+- etc.
 
-## Usage for Fee Matching
+## Usage Example
 
 ```sql
--- CORRECT: Use this table for fee matching
-SELECT mms.volume_tier, mms.fraud_tier
-FROM monthly_merchant_stats mms
-WHERE mms.merchant = '<merchant_name>'
-  AND mms.year = 2023
-  AND mms.month = 1  -- January
-
--- Then filter fees:
-WHERE (fees.monthly_volume IS NULL OR fees.monthly_volume = mms.volume_tier)
-  AND (fees.monthly_fraud_level IS NULL OR fees.monthly_fraud_level = mms.fraud_tier)
+-- Get monthly tiers
+SELECT volume_tier, fraud_tier
+FROM uploads.main.monthly_merchant_stats
+WHERE merchant = :merchant AND year = :year AND month = :month
 ```
 
-Useful for monthly trend monitoring, merchant benchmarking, and tier-based fee/risk reporting.
+## Do Not Recompute
+
+These tiers are pre-computed and canonical. Do NOT recalculate from payments table.
 
 ### Column comments (non-empty)
 - `merchant`: merchant identifier (business name)
@@ -629,3 +411,91 @@ Useful for monthly trend monitoring, merchant benchmarking, and tier-based fee/r
 - `fraud_rate`: ratio of fraud_volume_eur to total_volume_eur (fraudulent volume share)
 - `volume_tier`: processed volume category for merchant/month (e.g., <100k, 100k–1m)
 - `fraud_tier`: fraud rate category for merchant/month (e.g., <7.2%, 7.2%–7.7%, >8.3%)
+
+## Table: `uploads.main.fees`
+- Name: **uploads.main.fees**
+- Active: **true**
+- Rows: **1000**
+
+### Description
+# uploads.main.fees
+
+Fee rules table defining pricing structure. One row per fee rule (1,000 rules total).
+
+## Key Columns
+
+- **ID** - Unique fee rule identifier (primary key)
+- **card_scheme** - Card network (required match to payments.card_scheme)
+- **account_type** - JSON array of account types ([] = wildcard)
+- **capture_delay** - Settlement delay bucket (NULL = wildcard)
+- **monthly_fraud_level** - Fraud tier (NULL = wildcard)
+- **monthly_volume** - Volume tier (NULL = wildcard)
+- **merchant_category_code** - JSON array of MCCs ([] = wildcard)
+- **is_credit** - Card type filter ("true"/"false"/NULL)
+- **aci** - JSON array of ACI codes ([] = wildcard)
+- **intracountry** - Domestic vs cross-border filter ("true"/"false"/NULL)
+- **fixed_amount** - Fixed fee in EUR
+- **rate** - Variable fee in basis points
+
+## Fee Formula
+
+```
+fee = fixed_amount + (rate * eur_amount / 10000.0)
+```
+
+## Wildcard Rules
+
+- **NULL** = applies to all values
+- **[]** (empty JSON array) = applies to all values
+- Non-null/non-empty = must match exactly
+
+## Matching Logic
+
+Fee matching is strict `AND` across all non-null/non-empty constraints:
+1. `card_scheme` must match exactly (required)
+2. All other fields: NULL/[] = pass automatically, otherwise must match
+3. If multiple rules match: select highest specificity (most constraints), average if tied
+4. If no rules match: fee is 0 (never drop transaction)
+
+## Intracountry Matching
+
+Calculate transaction's intracountry flag:
+```sql
+intracountry = CASE WHEN issuing_country = acquirer_country THEN 1 ELSE 0 END
+```
+
+Match against fees.intracountry:
+- fees.intracountry = NULL → applies to both domestic and cross-border
+- fees.intracountry = "true" → applies only when intracountry = 1
+- fees.intracountry = "false" → applies only when intracountry = 0
+
+## JSON Array Matching
+
+For columns stored as JSON arrays (account_type, merchant_category_code, aci):
+```sql
+-- String arrays
+(fees.account_type = '[]' OR value IN (SELECT value FROM json_each(fees.account_type)))
+
+-- Integer arrays (MCC)
+(fees.merchant_category_code = '[]' OR value IN (SELECT CAST(value AS INTEGER) FROM json_each(fees.merchant_category_code)))
+```
+
+## Usage Notes
+
+- See SQL Templates & Query Patterns note for complete fee calculation queries
+- Use specificity calculation to resolve multiple matching rules
+- Monthly tier filters (volume_tier, fraud_tier) must come from monthly_merchant_stats
+
+### Column comments (non-empty)
+- `ID`: Primary key - unique identifier for each fee rule (also called rule_id in some contexts)
+- `card_scheme`: Card payment network - must match payments.card_scheme exactly for rule to apply
+- `account_type`: Merchant account types this rule applies to. JSON array format: ["R", "D"] or [] for wildcard (all types). Match against merchant_data.account_type.
+- `capture_delay`: Settlement delay bucket. Values: immediate, <3, 3-5, >5, manual, or NULL for wildcard. Match against merchant_data.capture_delay_bucket.
+- `monthly_fraud_level`: Fraud tier from monthly_merchant_stats. Values: <7.2%, 7.2%-7.7%, 7.7%-8.3%, >8.3%, or NULL (applies to all fraud levels)
+- `monthly_volume`: Volume tier from monthly_merchant_stats. Values: <100k, 100k-1m, 1m-5m, >5m, or NULL (applies to all volumes)
+- `merchant_category_code`: Merchant category codes. JSON array format: [5812, 7997] or [] for wildcard (all MCCs). Match against merchant_data.merchant_category_code.
+- `is_credit`: Credit vs debit card filter. Values: "true" (credit only), "false" (debit only), NULL (both). Match against CAST(payments.is_credit AS TEXT).
+- `aci`: Authorization Characteristics Indicator codes. JSON array: ["A", "B"] or [] for wildcard. Match against payments.aci.
+- `fixed_amount`: Fixed fee component in EUR. Total fee = fixed_amount + (rate * eur_amount / 10000)
+- `rate`: Variable fee rate in basis points (1 bp = 0.01%). Applied as rate * eur_amount / 10000
+- `intracountry`: ✅ NOW PRESENT! Domestic vs cross-border filter. Values: "true" (domestic only - issuing_country = acquirer_country), "false" (cross-border only), NULL (applies to both). 56% NULL, 22.5% false, 21.4% true. Fee IDs 304, 861, 871 have "true" (domestic-only).
