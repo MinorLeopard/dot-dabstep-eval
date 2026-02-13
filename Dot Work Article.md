@@ -1,6 +1,5 @@
 # Dot Work Article
 
-Status: In progress
 
 - So according to the task
 I started working by reading the docs of dot, looking around the test env and also dabstep repo

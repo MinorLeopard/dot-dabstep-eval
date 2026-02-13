@@ -75,6 +75,8 @@
 1. Query actual transactions for that merchant and period.
 2. Match fees per transaction using transaction + merchant + monthly-tier dimensions.
 3. Return union of matching `ID`s across all transactions.
+4. Superset guardrail: compute `supporting_txn_count` per fee `ID` and keep only IDs with `supporting_txn_count > 0`.
+5. Never derive fee IDs from merchant attributes alone (that causes supersets).
 
 ## Not Applicable rule
 - If the concept is not present in the model (for example fines/penalties), answer `Not Applicable`.
@@ -92,7 +94,8 @@ WHERE merchant = :merchant AND year = :year AND month = :month;
 ```sql
 -- Build merchant/date transactions.
 -- Derive month from day_of_year, compute intracountry, join merchant_data + monthly_merchant_stats.
--- Match fees with strict AND and return DISTINCT fee IDs.
+-- Match fees with strict AND, group by fee ID, keep HAVING COUNT(DISTINCT psp_reference) > 0.
+-- Return only verified transaction-supported fee IDs.
 ```
 
 ### Total fees (merchant + month/date)

@@ -13,6 +13,10 @@
    - "fixed fee" changed => change `fixed_amount`
 5. Tightened email empty handling:
    - treat NULL and `TRIM(email_address) = ''` as empty
+6. Added anti-superset fee-ID guardrails:
+   - require per-ID `supporting_txn_count > 0` from transaction-level matches
+   - forbid merchant-only fee-ID derivation
+   - applicable-ID template now explicitly groups by ID and filters to transaction-supported IDs
 
 ## Why
 - These are the remaining high-impact fee-engine ambiguities that can shift hard fee totals and delta answers.
